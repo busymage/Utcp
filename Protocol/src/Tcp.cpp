@@ -1,5 +1,6 @@
 #include <Protocol/PacketBuilder.hpp>
 #include <Protocol/ChecksumCalc.hpp>
+#include <Protocol/INetDevice.hpp>
 #include <Protocol/Segment.hpp>
 #include <Protocol/SocketPair.hpp>
 #include <Protocol/Tcb.hpp>
@@ -20,7 +21,8 @@ struct ConnectionSock{
 };
 
 struct PassiveSock{
-    pid_t process;
+    //pid_t process;
+    uint16_t port;
     std::vector<ConnectionSock> backlog;
 };
 
@@ -67,7 +69,7 @@ struct Tcp::Impl
 {
     std::shared_ptr<INetDevice> netDev;
     std::map<SocketPair, std::shared_ptr<Tcb>> establishedConnection;
-    std::map<uint16_t, PassiveSock*> bound;
+    std::map<uint16_t, std::shared_ptr<PassiveSock>> listener;
    
     void synRecvived(std::shared_ptr<Tcb> tcb, Segment &seg)
     {
@@ -157,7 +159,7 @@ std::shared_ptr<Tcb> &Tcp::getEstablishedConnection(SocketPair &pair)
 
 bool Tcp::hasBoundPort(uint16_t port) const
 {
-    return impl_->bound.find(port) != impl_->bound.end();
+    return impl_->listener.find(port) != impl_->listener.end();
 }
 
 void Tcp::onPacket(std::shared_ptr<Tcb> tcb, std::vector<uint8_t> &buffer)
@@ -208,6 +210,42 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
      
     iphdr *inetHdr = (iphdr*)buffer.data();
     tcphdr *tcpHdr = (tcphdr*)(buffer.data() + inetHdr->ihl * 4);
+    
+    //first check for an RST An incoming RST should be ignored.  Return.
+    if(tcpHdr->rst){
+        buffer.clear();
+        return;
+    }
+
+    /*
+     *  second check for an ACK
+        Any acknowledgment is bad if it arrives on a connection still in
+        the LISTEN state.  An acceptable reset segment should be formed
+        for any arriving ACK-bearing segment.  The RST should be
+        formatted as follows:
+          <SEQ=SEG.ACK><CTL=RST>
+        Return.
+    */
+    if (tcpHdr->ack){
+        tcphdr th = {0};
+        th.source = tcpHdr->dest;
+        th.dest = tcpHdr->source;
+        th.th_off = 5;
+        th.seq = tcpHdr->ack_seq;
+        th.ack = 0;
+        th.rst = 1;
+        th.window = 1234;
+        th.check = caclTcpChecksum(&th, 20, 0xa000001, 0xa000002);
+        PacketBuilder pb(0xa000001, 0xa000002, &th, 20);
+        std::vector<uint8_t> packet = pb.packet();
+
+        int nwrite = impl_->netDev->send(packet.data(), packet.size());
+        if(nwrite == -1){
+            perror("write to netDevice:");
+            exit(1);
+        }
+        return;
+    }
     
     if(!tcpHdr->syn){
         printf("dont have syn\n");
@@ -271,13 +309,29 @@ void Tcp::run()
 			exit(1);
 		}
 		printf("got %d bytes\n", nread);
+	}
+}
 		
+bool Tcp::addListener(uint16_t port)
+{
+    if(impl_->listener.find(port) != impl_->listener.end()){
+        return false;
+    }
+    std::shared_ptr<PassiveSock> ps = std::make_shared<PassiveSock>();
+    ps->port = port;
+    impl_->listener[port] = ps;
+    return true;
+}
+
+void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
+{
+
 		iphdr *inetHdr = (iphdr*)buffer.data();
 		if(inetHdr->version != 4){
-			continue;
+        return;
 		}
 		if(inetHdr->protocol != 0x06){
-			continue;
+        return;
 		}
 		tcphdr *tcpHdr = (tcphdr*)(buffer.data() + inetHdr->ihl * 4);
 		
@@ -291,7 +345,7 @@ void Tcp::run()
 		if(isEstablished(pair)){
 			std::shared_ptr<Tcb> tcb = getEstablishedConnection(pair);
 			onPacket(tcb, buffer);
-		} else if(hasBoundPort(tcpHdr->dest)){
+    } else if(hasBoundPort(ntohs(tcpHdr->dest))){
 			onAccept(buffer);
 		} else{
 			onAccept(buffer);

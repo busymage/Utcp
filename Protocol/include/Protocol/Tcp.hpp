@@ -26,6 +26,10 @@ public:
 
     void run();
 
+    bool addListener(uint16_t port);
+
+    void packetProcessing(std::vector<uint8_t> &buffer);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

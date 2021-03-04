@@ -22,4 +22,4 @@ add_library(Protocol ${Sources} ${Headers})
 
 include_directories(include)
 
-#add_subdirectory(test)
+add_subdirectory(test)
