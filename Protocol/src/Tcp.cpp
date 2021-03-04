@@ -1,0 +1,221 @@
+#include <Protocol/PacketBuilder.hpp>
+#include <Protocol/ChecksumCalc.hpp>
+#include <Protocol/Segment.hpp>
+#include <Protocol/SocketPair.hpp>
+#include <Protocol/Tcb.hpp>
+#include <Protocol/Tcp.hpp>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
+#include <string.h>
+#include <unistd.h>
+
+constexpr const uint16_t RecvWnd = 65535;
+
+struct ConnectionSock{
+    std::vector<char> sendBuffer;
+    std::vector<char> recvBuffer;
+};
+
+struct PassiveSock{
+    pid_t process;
+    std::vector<ConnectionSock> backlog;
+};
+
+struct Tcp::Impl
+{
+    int netDev;
+    std::map<SocketPair, std::shared_ptr<Tcb>> establishedConnection;
+    std::map<uint16_t, PassiveSock*> bound;
+   
+    void synRecvived(std::shared_ptr<Tcb> tcb, Segment &seg)
+    {
+        if(!seg.ack()){
+            return;
+        }
+        tcb->state = TcpState::ESTABLISHED;
+    }
+
+    void established(std::shared_ptr<Tcb> tcb, Segment &seg)
+    {
+        if(!seg.ack()){
+            return;
+        }
+        //peer close
+        if (seg.fin())
+        {
+            tcb->state = TcpState::CLOSE_WAIT;
+            tcphdr resTcpHdr = {0};
+            resTcpHdr.source = tcb->addr.dport;
+            resTcpHdr.dest = tcb->addr.sport;
+            resTcpHdr.seq = htonl(tcb->snd.nxt);
+            resTcpHdr.ack_seq = htonl(seg.seq() + 1);
+            resTcpHdr.doff = 5;
+            resTcpHdr.ack = 1;
+            resTcpHdr.window = htons(RecvWnd);
+            resTcpHdr.check = caclTcpChecksum(&resTcpHdr, 20, tcb->addr.daddr, tcb->addr.saddr);
+
+            PacketBuilder pktBuilder(tcb->addr.daddr, tcb->addr.saddr,
+                                     &resTcpHdr, 20);
+            std::vector<uint8_t> outBuffer = pktBuilder.packet();
+
+            size_t nwrite = write(netDev, outBuffer.data(), outBuffer.size());
+            if (nwrite == -1)
+            {
+                perror("write to netdevice:");
+                exit(1);
+            }
+            printf("write %zu bytes\n", nwrite);
+            outBuffer.clear();
+            
+            tcb->state = TcpState::LAST_ACK;
+            resTcpHdr.fin = 1;
+            resTcpHdr.check = 0;
+            resTcpHdr.check = caclTcpChecksum(&resTcpHdr, 20, tcb->addr.daddr, tcb->addr.saddr);
+
+            PacketBuilder pktBuilder1(tcb->addr.daddr, tcb->addr.saddr,
+                                     &resTcpHdr, 20);
+            outBuffer = pktBuilder1.packet();
+
+            nwrite = write(netDev, outBuffer.data(), outBuffer.size());
+            if (nwrite == -1)
+            {
+                perror("write to netdevice:");
+                exit(1);
+            }
+            printf("write %zu bytes\n", nwrite);
+
+            tcb->snd.una = ntohl(resTcpHdr.seq);
+        }
+    }
+
+    void close(std::shared_ptr<Tcb> tcb, Segment &seg)
+    {
+        auto it = establishedConnection.find(tcb->addr);
+        establishedConnection.erase(it);
+    }
+};
+
+Tcp::Tcp(int netDev)
+    : impl_(new Impl)
+{
+    impl_->netDev = netDev;
+}
+
+Tcp::~Tcp() = default;
+
+bool Tcp::isEstablished(SocketPair &pair)const
+{
+    return  impl_->establishedConnection.find(pair) != impl_->establishedConnection.end();
+}
+
+std::shared_ptr<Tcb> &Tcp::getEstablishedConnection(SocketPair &pair)
+{
+    return impl_->establishedConnection[pair];
+}
+
+bool Tcp::hasBoundPort(uint16_t port) const
+{
+    return impl_->bound.find(port) != impl_->bound.end();
+}
+
+void Tcp::onPacket(std::shared_ptr<Tcb> tcb, std::vector<uint8_t> &buffer)
+{
+    iphdr *ih = (iphdr*)buffer.data();
+    Segment seg(buffer.data() + ih->ihl * 4, ntohs(ih->tot_len) - ih->ihl * 4);
+    
+    //accpetable ack
+    //SND.UNA < SEG.ACK =< SND.NXT
+    if(tcb->snd.una >= seg.ackSeq() && tcb->snd.nxt < seg.ackSeq()){
+            printf("unacceptable ack.\n");
+            return;
+    }
+
+    //RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
+    if(tcb->rcv.nxt > (seg.seq() + seg.dataLen() - 1) &&
+        (tcb->rcv.nxt + tcb->rcv.wnd) <= (seg.seq() + seg.dataLen() - 1)){
+            printf("seg not in recv window\n");
+            return;
+    }
+    tcb->rcv.nxt = seg.seq() + seg.dataLen();
+
+    switch (tcb->state)
+    {
+    case TcpState::SYN_RECEIVED:
+        impl_->synRecvived(tcb, seg);
+        break;
+    case TcpState::ESTABLISHED:
+        impl_->established(tcb, seg);
+        break;
+    case TcpState::LAST_ACK:
+        impl_->close(tcb, seg);
+    default:
+        break;
+    }
+    std::cout<< *tcb;
+}
+
+void Tcp::onAccept(std::vector<uint8_t> &buffer)
+{
+    if(buffer.size() < 40){
+        printf("packet to small\n");
+        return;
+    }
+     
+    iphdr *inetHdr = (iphdr*)buffer.data();
+    tcphdr *tcpHdr = (tcphdr*)(buffer.data() + inetHdr->ihl * 4);
+    
+    if(!tcpHdr->syn){
+        printf("dont have syn\n");
+        return;
+    }
+
+    // inital tcb
+    std::shared_ptr<Tcb> tcb = std::make_shared<Tcb>();
+    tcb->addr = {
+        inetHdr->saddr,
+        inetHdr->daddr,
+        tcpHdr->source,
+        tcpHdr->dest
+    };
+    tcb->snd.wnd = tcpHdr->window;
+    tcb->snd.iss = 0;
+
+    tcb->rcv.wnd = RecvWnd;
+    tcb->rcv.irs = ntohl(tcpHdr->seq);
+    tcb->rcv.nxt = tcpHdr->seq + 1;
+
+    //construct syn,ack handshake
+    tcphdr resTcpHdr = {0};
+    resTcpHdr.source = tcpHdr->dest;
+    resTcpHdr.dest = tcpHdr->source;
+    resTcpHdr.seq = tcb->snd.iss;
+    resTcpHdr.ack_seq = htonl(tcb->rcv.irs + 1);
+    resTcpHdr.doff = 5;
+    resTcpHdr.ack = 1;  
+    resTcpHdr.syn = 1; 
+    resTcpHdr.window = htons(RecvWnd);
+    resTcpHdr.check = caclTcpChecksum(&resTcpHdr, 20, inetHdr->daddr, inetHdr->saddr);
+
+    PacketBuilder pktBuilder(inetHdr->daddr, inetHdr->saddr,
+                            &resTcpHdr, 20);
+    std::vector<uint8_t> outBuffer = pktBuilder.packet();
+    
+    //update tcb
+    tcb->snd.nxt = tcb->snd.iss + 1;
+    tcb->snd.una = tcb->snd.iss;
+    tcb->state = TcpState::SYN_RECEIVED;
+
+    size_t nwrite = write(impl_->netDev, outBuffer.data(), outBuffer.size());
+    if(nwrite == -1){
+        perror("write to netdevice:");
+        exit(1);
+    }
+    printf("write %zu bytes\n", nwrite);
+    std::cout<< *tcb;
+
+    //add tcb to map
+    impl_->establishedConnection[tcb->addr] = tcb;
+}
