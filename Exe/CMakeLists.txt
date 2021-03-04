@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.0.0)
 
-set(Sources src/tun.cpp)
+set(Sources src/main.cpp)
 
 add_executable(Utcp ${Sources})
 

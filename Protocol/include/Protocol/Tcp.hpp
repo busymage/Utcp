@@ -5,10 +5,13 @@
 #include <Protocol/SocketPair.hpp>
 #include <vector>
 
+class INetDevice;
+struct Tcb;
+
 class Tcp
 {
 public:
-    Tcp(int netDev);
+    Tcp(std::shared_ptr<INetDevice> netDev);
     ~Tcp();
 
     bool isEstablished(SocketPair &pair)const;
@@ -20,6 +23,8 @@ public:
     void onPacket(std::shared_ptr<Tcb> tcb ,std::vector<uint8_t> &buffer);
 
     void onAccept(std::vector<uint8_t> &buffer);
+
+    void run();
 
 private:
     struct Impl;

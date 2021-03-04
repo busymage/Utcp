@@ -1,6 +1,8 @@
 #ifndef UTCP_TCB_HPP
 #define UTCP_TCB_HPP
 
+#include <deque>
+#include <netinet/tcp.h>
 #include <ostream>
 #include <Protocol/SocketPair.hpp>
 #include <stdint.h>
@@ -51,6 +53,7 @@ enum TcpState{
     LAST_ACK,
     FIN_WAIT1,
     FIN_WAIT2,
+    CLOSING,
     TIME_WAIT
 };
 
@@ -59,6 +62,10 @@ struct Tcb{
     TcpState state;
     SND snd;
     RCV rcv;
+    std::deque<uint8_t> sndQueue;
+    std::deque<uint8_t> recvQueue;
+
+    Tcb(SocketPair &addr, tcphdr *th);
 };
 
 inline std::ostream& operator<<(std::ostream &os, Tcb &tcb)
