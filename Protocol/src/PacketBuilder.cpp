@@ -24,7 +24,7 @@ PacketBuilder::PacketBuilder(uint32_t saddr,
     ih.protocol = 0x06;
     ih.saddr = saddr;
     ih.daddr = daddr;
-    ih.tot_len = htons(40);
+    ih.tot_len = htons(sizeof(iphdr) + len);
     ih.check = checksum(&ih, sizeof(iphdr), 0);
 
     uint8_t *ihStart = (uint8_t*)&ih;

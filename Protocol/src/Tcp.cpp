@@ -167,6 +167,31 @@ void Tcp::onPacket(std::shared_ptr<Tcb> tcb, std::vector<uint8_t> &buffer)
     iphdr *ih = (iphdr*)buffer.data();
     Segment seg(buffer.data() + ih->ihl * 4, ntohs(ih->tot_len) - ih->ihl * 4);
     
+    if(tcb->rcv.wnd == 0){
+        //<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+        if(seg.dataLen() > 0){
+            tcphdr th = {0};
+            th.source = htons(seg.dport());
+            th.dest = htons(seg.sport());
+            th.th_off = 5;
+            th.seq = htonl(tcb->snd.nxt);
+            th.ack_seq = htonl(tcb->rcv.nxt);
+            th.ack = 1;
+            th.window = htonl(tcb->rcv.wnd);
+            th.check = caclTcpChecksum(&th, 20, 0xa000001, 0xa000002);
+            PacketBuilder pb(0xa000001, 0xa000002, &th, 20);
+            std::vector<uint8_t> packet = pb.packet();
+
+            int nwrite = impl_->netDev->send(packet.data(), packet.size());
+            if(nwrite == -1){
+                perror("write to netDevice:");
+                exit(1);
+            }
+            return;
+        }
+    }else{
+
+    }
     if(!seg.ack()){
         return;
     }
@@ -330,33 +355,49 @@ bool Tcp::addListener(uint16_t port)
     return true;
 }
 
+bool Tcp::addConnection(std::shared_ptr<Tcb> tcb)
+{
+    if(impl_->establishedConnection.find(tcb->addr) != impl_->establishedConnection.end()){
+        return false;
+    }
+    impl_->establishedConnection[tcb->addr] = tcb;
+    return true;
+}
+
 void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
 {
+    if(buffer.size() < 40){
+        printf("packet to small\n");
+        return;
+    }
 
-		iphdr *inetHdr = (iphdr*)buffer.data();
-		if(inetHdr->version != 4){
+    iphdr *inetHdr = (iphdr *)buffer.data();
+    if (inetHdr->version != 4)
+    {
         return;
 		}
-		if(inetHdr->protocol != 0x06){
+    if (inetHdr->protocol != 0x06)
+    {
         return;
 		}
-		tcphdr *tcpHdr = (tcphdr*)(buffer.data() + inetHdr->ihl * 4);
+    tcphdr *tcpHdr = (tcphdr *)(buffer.data() + inetHdr->ihl * 4);
 		
 		SocketPair pair = {
 			inetHdr->saddr,
         tcpHdr->source,
 			inetHdr->daddr,
-			tcpHdr->source,
-			tcpHdr->dest
-		};
+        tcpHdr->dest};
 		
-		if(isEstablished(pair)){
+    if (isEstablished(pair))
+    {
 			std::shared_ptr<Tcb> tcb = getEstablishedConnection(pair);
 			onPacket(tcb, buffer);
-    } else if(hasBoundPort(ntohs(tcpHdr->dest))){
-			onAccept(buffer);
-		} else{
+    }
+    else if (hasBoundPort(ntohs(tcpHdr->dest)))
+    {
 			onAccept(buffer);
 		}
+    else
+    {
 	}
 }

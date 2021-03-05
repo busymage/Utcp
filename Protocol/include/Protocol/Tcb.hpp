@@ -65,6 +65,7 @@ struct Tcb{
     std::deque<uint8_t> sndQueue;
     std::deque<uint8_t> recvQueue;
 
+    Tcb(SocketPair &addr);
     Tcb(SocketPair &addr, tcphdr *th);
 };
 

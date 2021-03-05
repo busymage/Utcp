@@ -7,6 +7,7 @@
 #include <Protocol/ChecksumCalc.hpp>
 #include <Protocol/PacketBuilder.hpp>
 #include <deque>
+#include <string.h>
 
 class MockNetDev : public INetDevice{
 public:
@@ -129,4 +130,47 @@ TEST_F(TcpTest, recvSynInListen)
     ASSERT_EQ(tcb->rcv.irs, ntohl(th.seq));
     ASSERT_EQ(tcb->rcv.nxt, ntohl(th.seq) + 1);
     ASSERT_EQ(tcb->state, TcpState::SYN_RECEIVED);
+}
+
+TEST_F(TcpTest, notAcceptableSgementIncoming)
+{
+    SocketPair sp = {
+        0xa000001,
+        htons(999),
+        0xa000002,
+        htons(9981)
+    };
+    std::shared_ptr<Tcb> tcb = std::make_shared<Tcb>(sp);
+    tcb->state = TcpState::ESTABLISHED;
+    tcb->snd.nxt = 0x1234;
+    tcb->rcv.wnd = 0;
+    tcb->rcv.nxt = 0x4567;
+    ASSERT_TRUE(tcp->addConnection(tcb));
+    ASSERT_TRUE(tcp->isEstablished(sp));
+
+    tcphdr th = {0};
+    th.source = sp.sport;
+    th.dest = sp.dport;
+    th.th_off = 5;
+    th.seq = htonl(0x4567);
+    th.ack_seq = 1234;
+    th.ack = 1;
+    th.window = 1234;
+    uint8_t *payload = new uint8_t[26];
+    uint8_t str[] = "hello";
+    memcpy(payload, &th, 20);
+    memcpy(payload + 20, str, 5);
+    th.check = caclTcpChecksum(payload, 25, sp.saddr, sp.daddr);
+    PacketBuilder pb(sp.saddr, sp.daddr, payload, 25);
+    std::vector<uint8_t> packet = pb.packet();
+    netDev->recv(packet.data(), packet.size());
+
+    ASSERT_EQ(netDev->outData.size(), 1);
+    std::vector<uint8_t> data = netDev->outData[0];
+    tcphdr *hdr = (tcphdr*)(data.data() + sizeof(iphdr));
+    ASSERT_EQ(hdr->seq, htonl(0x1234));
+    ASSERT_EQ(hdr->ack_seq, htonl(0x4567));
+    ASSERT_EQ(hdr->ack, 1);
+
+    delete []payload;
 }

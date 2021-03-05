@@ -15,7 +15,7 @@ public:
     ~Tcp();
 
     bool isEstablished(SocketPair &pair)const;
-
+    
     std::shared_ptr<Tcb> &getEstablishedConnection(SocketPair &pair);
 
     bool hasBoundPort(uint16_t port) const;
@@ -27,6 +27,8 @@ public:
     void run();
 
     bool addListener(uint16_t port);
+
+    bool addConnection(std::shared_ptr<Tcb> tcb);
 
     void packetProcessing(std::vector<uint8_t> &buffer);
 
