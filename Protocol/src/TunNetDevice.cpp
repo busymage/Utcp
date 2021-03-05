@@ -38,38 +38,41 @@ int tun_alloc(int flags)
 	return fd;
 }
 
-
 struct TunNetDevice::Impl
 {
-    int netdev;
+	int netdev;
 };
 
 TunNetDevice::TunNetDevice()
-:impl_(new Impl)
+	: impl_(new Impl)
 {
-    /* Flags: IFF_TUN   - TUN device (no Ethernet headers)
+	/* Flags: IFF_TUN   - TUN device (no Ethernet headers)
 	 * IFF_TAP   - TAP device
 	 * IFF_NO_PI - Do not provide packet information
 	**/
-    impl_->netdev = tun_alloc(IFF_TUN | IFF_NO_PI);
+	impl_->netdev = tun_alloc(IFF_TUN | IFF_NO_PI);
 	if (impl_->netdev < 0)
 	{
 		perror("Allocating interface");
 		exit(1);
 	}
-
 }
 TunNetDevice::~TunNetDevice()
 {
-    close(impl_->netdev);
+	close(impl_->netdev);
 }
 
 int TunNetDevice::send(const uint8_t *data, size_t len)
 {
-    return write(impl_->netdev, data, len);
+	int nwrite = write(impl_->netdev, data, len);
+	if (nwrite == -1)
+	{
+		perror("write to netDevice:");
+		exit(1);
+	}
 }
 
 int TunNetDevice::recv(uint8_t *data, size_t len)
 {
-    return read(impl_->netdev, data, len);
+	return read(impl_->netdev, data, len);
 }

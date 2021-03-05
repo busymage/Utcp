@@ -26,17 +26,13 @@ struct PassiveSock{
     std::vector<ConnectionSock> backlog;
 };
 
-std::vector<uint8_t> buildAckPacket(std::shared_ptr<Tcb> tcb, Segment &seg)
+std::vector<uint8_t> buildAckPacket(std::shared_ptr<Tcb> tcb, uint32_t ack_seq)
 {
         tcphdr resTcpHdr = {0};
         resTcpHdr.source = tcb->addr.dport;
         resTcpHdr.dest = tcb->addr.sport;
         resTcpHdr.seq = htonl(tcb->snd.nxt);
-        if(seg.dataLen() == 0){
-            resTcpHdr.ack_seq = htonl(seg.seq() + 1);
-        }else{
-            resTcpHdr.ack_seq = htonl(seg.seq() + seg.dataLen());
-        }
+        resTcpHdr.ack_seq = htonl(ack_seq);
         resTcpHdr.doff = 5;
         resTcpHdr.ack = 1;
         resTcpHdr.window = htons(tcb->rcv.wnd);
@@ -65,6 +61,11 @@ std::vector<uint8_t> buildFinPacket(std::shared_ptr<Tcb> tcb, Segment &seg)
         return pktBuilder.packet();
 }
 
+bool isBetween(uint32_t seq, uint32_t start, uint32_t end)
+{   
+    //should care about warpping.
+    return seq >= start && seq < end;
+}
 struct Tcp::Impl
 {
     std::shared_ptr<INetDevice> netDev;
@@ -79,11 +80,22 @@ struct Tcp::Impl
         tcb->state = TcpState::ESTABLISHED;
     }
 
-    void established(std::shared_ptr<Tcb> tcb, Segment &seg)
+    bool checkSequenceNumber(std::shared_ptr<Tcb> tcb, Segment &seg)
     {
-        if(!seg.ack()){
-            return;
+        if(tcb->rcv.wnd == 0){
+            //<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+            //SEG.SEQ = RCV.NXT 
+            if(seg.dataLen() > 0 || seg.seq() != tcb->rcv.nxt){
+                return false;
         }
+        }
+        //RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
+        if(!isBetween(seg.seq(), tcb->rcv.nxt, tcb->rcv.nxt + tcb->rcv.wnd)){
+            return false;
+        }
+        return true;
+    }
+
         //peer close
         if (seg.fin())
         {
@@ -119,6 +131,7 @@ struct Tcp::Impl
             PacketBuilder pktBuilder1(tcb->addr.daddr, tcb->addr.saddr,
                                      &resTcpHdr, 20);
             outBuffer = pktBuilder1.packet();
+            netDev->send(outBuffer.data(), outBuffer.size());
 
             nwrite = netDev->send(outBuffer.data(), outBuffer.size());
             if (nwrite == -1)
@@ -167,26 +180,9 @@ void Tcp::onPacket(std::shared_ptr<Tcb> tcb, std::vector<uint8_t> &buffer)
     iphdr *ih = (iphdr*)buffer.data();
     Segment seg(buffer.data() + ih->ihl * 4, ntohs(ih->tot_len) - ih->ihl * 4);
     
-    if(tcb->rcv.wnd == 0){
-        //<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
-        if(seg.dataLen() > 0){
-            tcphdr th = {0};
-            th.source = htons(seg.dport());
-            th.dest = htons(seg.sport());
-            th.th_off = 5;
-            th.seq = htonl(tcb->snd.nxt);
-            th.ack_seq = htonl(tcb->rcv.nxt);
-            th.ack = 1;
-            th.window = htonl(tcb->rcv.wnd);
-            th.check = caclTcpChecksum(&th, 20, 0xa000001, 0xa000002);
-            PacketBuilder pb(0xa000001, 0xa000002, &th, 20);
-            std::vector<uint8_t> packet = pb.packet();
-
-            int nwrite = impl_->netDev->send(packet.data(), packet.size());
-            if(nwrite == -1){
-                perror("write to netDevice:");
-                exit(1);
-            }
+    if(!impl_->checkSequenceNumber(tcb, seg)){
+        std::vector<uint8_t> outBuffer = buildAckPacket(tcb, tcb->rcv.nxt);
+        impl_->netDev->send(outBuffer.data(), outBuffer.size());
             return;
         }
     }else{
@@ -264,11 +260,7 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
         PacketBuilder pb(0xa000001, 0xa000002, &th, 20);
         std::vector<uint8_t> packet = pb.packet();
 
-        int nwrite = impl_->netDev->send(packet.data(), packet.size());
-        if(nwrite == -1){
-            perror("write to netDevice:");
-            exit(1);
-        }
+        impl_->netDev->send(packet.data(), packet.size());
         return;
     }
     
@@ -307,17 +299,7 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
                             &resTcpHdr, 20);
     std::vector<uint8_t> outBuffer = pktBuilder.packet();
     
-    //update tcb
-    tcb->snd.nxt = tcb->snd.iss + 1;
-    tcb->snd.una = tcb->snd.iss;
-    tcb->state = TcpState::SYN_RECEIVED;
-
-    size_t nwrite =impl_->netDev->send(outBuffer.data(), outBuffer.size());
-    if(nwrite == -1){
-        perror("write to netDevice:");
-        exit(1);
-    }
-    printf("write %zu bytes\n", nwrite);
+    impl_->netDev->send(outBuffer.data(), outBuffer.size());
     
     //update tcb
     tcb->snd.nxt = tcb->snd.iss + 1;
@@ -329,6 +311,7 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
     //add tcb to map
     impl_->establishedConnection[tcb->addr] = tcb;
 }
+
 void Tcp::run()
 {
     while (1)

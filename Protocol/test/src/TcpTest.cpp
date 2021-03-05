@@ -9,17 +9,18 @@
 #include <deque>
 #include <string.h>
 
-class MockNetDev : public INetDevice{
+class MockNetDev : public INetDevice
+{
 public:
     Tcp *tcp;
-    
+
     //nic out data
     std::deque<std::vector<uint8_t>> outData;
 
     virtual int send(const uint8_t *data, size_t len) override
     {
-       std::vector<uint8_t> buf(data, data + len);
-       outData.push_back(buf);
+        std::vector<uint8_t> buf(data, data + len);
+        outData.push_back(buf);
         return len;
     }
     virtual int recv(uint8_t *data, size_t len) override
@@ -27,18 +28,18 @@ public:
         std::vector<uint8_t> buf(data, data + len);
         tcp->packetProcessing(buf);
         return len;
-    }   
-    ~MockNetDev() 
+    }
+    ~MockNetDev()
     {
-
     }
 };
 
-class TcpTest: public testing::Test
+class TcpTest : public testing::Test
 {
 public:
     std::shared_ptr<MockNetDev> netDev;
     Tcp *tcp;
+    SocketPair sp;
 
 public:
     virtual void SetUp()
@@ -47,13 +48,19 @@ public:
         tcp = new Tcp(netDev);
         netDev->tcp = tcp;
         tcp->addListener(9981);
+        sp = {
+            0xa000001,
+            htons(999),
+            0xa000002,
+            htons(9981)
+        };
     }
 
-    virtual void TearDown(){
+    virtual void TearDown()
+    {
         delete tcp;
     }
 };
-
 
 TEST_F(TcpTest, recvRstInListen)
 {
@@ -87,19 +94,13 @@ TEST_F(TcpTest, recvAckInListen)
 
     ASSERT_EQ(netDev->outData.size(), 1);
     std::vector<uint8_t> data = netDev->outData[0];
-    tcphdr *hdr = (tcphdr*)(data.data() + sizeof(iphdr));
+    tcphdr *hdr = (tcphdr *)(data.data() + sizeof(iphdr));
     ASSERT_EQ(hdr->seq, 1234);
     ASSERT_EQ(hdr->rst, 1);
 }
 
 TEST_F(TcpTest, recvSynInListen)
 {
-    SocketPair sp = {
-        0xa000001,
-        htons(999),
-        0xa000002,
-        htons(9981)
-    };
     tcphdr th = {0};
     th.source = htons(999);
     th.dest = htons(9981);
@@ -115,7 +116,7 @@ TEST_F(TcpTest, recvSynInListen)
 
     ASSERT_EQ(netDev->outData.size(), 1);
     std::vector<uint8_t> data = netDev->outData[0];
-    tcphdr *hdr = (tcphdr*)(data.data() + sizeof(iphdr));
+    tcphdr *hdr = (tcphdr *)(data.data() + sizeof(iphdr));
     ASSERT_EQ(hdr->ack_seq, htonl(0x4568));
     ASSERT_EQ(hdr->syn, 1);
     ASSERT_EQ(hdr->ack, 1);
@@ -134,12 +135,6 @@ TEST_F(TcpTest, recvSynInListen)
 
 TEST_F(TcpTest, notAcceptableSgementIncoming)
 {
-    SocketPair sp = {
-        0xa000001,
-        htons(999),
-        0xa000002,
-        htons(9981)
-    };
     std::shared_ptr<Tcb> tcb = std::make_shared<Tcb>(sp);
     tcb->state = TcpState::ESTABLISHED;
     tcb->snd.nxt = 0x1234;
@@ -167,10 +162,72 @@ TEST_F(TcpTest, notAcceptableSgementIncoming)
 
     ASSERT_EQ(netDev->outData.size(), 1);
     std::vector<uint8_t> data = netDev->outData[0];
-    tcphdr *hdr = (tcphdr*)(data.data() + sizeof(iphdr));
+    tcphdr *hdr = (tcphdr *)(data.data() + sizeof(iphdr));
     ASSERT_EQ(hdr->seq, htonl(0x1234));
     ASSERT_EQ(hdr->ack_seq, htonl(0x4567));
     ASSERT_EQ(hdr->ack, 1);
 
-    delete []payload;
+    delete[] payload;
+}
+
+TEST_F(TcpTest, SegLenAndWndAreZeroAndSeqNumNotEqualRcvNext)
+{
+    //SEG.SEQ = RCV.NXT
+    std::shared_ptr<Tcb> tcb = std::make_shared<Tcb>(sp);
+    tcb->state = TcpState::ESTABLISHED;
+    tcb->snd.nxt = 0x1234;
+    tcb->rcv.wnd = 0;
+    tcb->rcv.nxt = 0x4567;
+    ASSERT_TRUE(tcp->addConnection(tcb));
+
+    tcphdr th = {0};
+    th.source = sp.sport;
+    th.dest = sp.dport;
+    th.th_off = 5;
+    th.seq = htonl(0x1234);
+    th.ack_seq = htonl(0x1234);
+    th.ack = 1;
+    th.window = 1234;
+    th.check = caclTcpChecksum(&th, 20, sp.saddr, sp.daddr);
+    PacketBuilder pb(sp.saddr, sp.daddr, &th, 20);
+    std::vector<uint8_t> packet = pb.packet();
+    netDev->recv(packet.data(), packet.size());
+
+    ASSERT_EQ(netDev->outData.size(), 1);
+    std::vector<uint8_t> data = netDev->outData[0];
+    tcphdr *hdr = (tcphdr *)(data.data() + sizeof(iphdr));
+    ASSERT_EQ(hdr->seq, htonl(0x1234));
+    ASSERT_EQ(hdr->ack_seq, htonl(0x4567));
+    ASSERT_EQ(hdr->ack, 1);
+}
+
+TEST_F(TcpTest, SegNumNotBetweenWnd)
+{
+    //RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
+    std::shared_ptr<Tcb> tcb = std::make_shared<Tcb>(sp);
+    tcb->state = TcpState::ESTABLISHED;
+    tcb->snd.nxt = 0x1234;
+    tcb->rcv.wnd = 512;
+    tcb->rcv.nxt = 0x4567;
+    ASSERT_TRUE(tcp->addConnection(tcb));
+
+    tcphdr th = {0};
+    th.source = sp.sport;
+    th.dest = sp.dport;
+    th.th_off = 5;
+    th.seq = htonl(0x7890);
+    th.ack_seq = htonl(0x1234);
+    th.ack = 1;
+    th.window = 1234;
+    th.check = caclTcpChecksum(&th, 20, sp.saddr, sp.daddr);
+    PacketBuilder pb(sp.saddr, sp.daddr, &th, 20);
+    std::vector<uint8_t> packet = pb.packet();
+    netDev->recv(packet.data(), packet.size());
+
+    ASSERT_EQ(netDev->outData.size(), 1);
+    std::vector<uint8_t> data = netDev->outData[0];
+    tcphdr *hdr = (tcphdr *)(data.data() + sizeof(iphdr));
+    ASSERT_EQ(hdr->seq, htonl(0x1234));
+    ASSERT_EQ(hdr->ack_seq, htonl(0x4567));
+    ASSERT_EQ(hdr->ack, 1);
 }
