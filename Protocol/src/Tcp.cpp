@@ -255,6 +255,7 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
     // inital tcb
     SocketPair sp = {
         inetHdr->saddr,
+        tcpHdr->source,
         inetHdr->daddr,
         tcpHdr->source,
         tcpHdr->dest
@@ -269,8 +270,8 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
     tcphdr resTcpHdr = {0};
     resTcpHdr.source = tcpHdr->dest;
     resTcpHdr.dest = tcpHdr->source;
-    resTcpHdr.seq = tcb->snd.iss;
-    resTcpHdr.ack_seq = htonl(tcb->rcv.irs + 1);
+    resTcpHdr.seq = htonl(tcb->snd.iss);
+    resTcpHdr.ack_seq = htonl(tcb->rcv.nxt);
     resTcpHdr.doff = 5;
     resTcpHdr.ack = 1;  
     resTcpHdr.syn = 1; 
@@ -292,6 +293,12 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
         exit(1);
     }
     printf("write %zu bytes\n", nwrite);
+    
+    //update tcb
+    tcb->snd.nxt = tcb->snd.iss + 1;
+    tcb->snd.una = tcb->snd.iss;
+    tcb->state = TcpState::SYN_RECEIVED;
+
     std::cout<< *tcb;
 
     //add tcb to map
@@ -337,6 +344,7 @@ void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
 		
 		SocketPair pair = {
 			inetHdr->saddr,
+        tcpHdr->source,
 			inetHdr->daddr,
 			tcpHdr->source,
 			tcpHdr->dest

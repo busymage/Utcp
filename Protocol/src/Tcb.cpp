@@ -14,5 +14,5 @@ Tcb::Tcb(SocketPair &sockPair, tcphdr *th)
     
     rcv.wnd = WND;
     rcv.irs = ntohl(th->seq);
-    rcv.nxt = th->seq + 1;
+    rcv.nxt = ntohl(th->seq) + 1;
 }

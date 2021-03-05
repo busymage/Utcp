@@ -5,8 +5,8 @@
 
 struct SocketPair{
     uint32_t saddr;
-    uint32_t daddr;
     uint16_t sport;
+    uint32_t daddr;
     uint16_t dport;
 };
 
