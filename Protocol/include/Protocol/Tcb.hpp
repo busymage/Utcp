@@ -67,6 +67,8 @@ struct Tcb{
 
     Tcb(SocketPair &addr);
     Tcb(SocketPair &addr, tcphdr *th);
+
+    bool isSynchronizedState();
 };
 
 inline std::ostream& operator<<(std::ostream &os, Tcb &tcb)

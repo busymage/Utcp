@@ -26,36 +26,34 @@ struct PassiveSock{
     std::vector<ConnectionSock> backlog;
 };
 
-std::vector<uint8_t> buildAckPacket(std::shared_ptr<Tcb> tcb, uint32_t ack_seq)
+void setDefaultValueForTcpHeader(std::shared_ptr<Tcb> tcb, tcphdr &th)
 {
-        tcphdr resTcpHdr = {0};
-        resTcpHdr.source = tcb->addr.dport;
-        resTcpHdr.dest = tcb->addr.sport;
-        resTcpHdr.seq = htonl(tcb->snd.nxt);
-        resTcpHdr.ack_seq = htonl(ack_seq);
-        resTcpHdr.doff = 5;
-        resTcpHdr.ack = 1;
-        resTcpHdr.window = htons(tcb->rcv.wnd);
-        resTcpHdr.check = caclTcpChecksum(&resTcpHdr, 20, tcb->addr.daddr, tcb->addr.saddr);
-
-        PacketBuilder pktBuilder(tcb->addr.daddr, tcb->addr.saddr,
-                                    &resTcpHdr, 20);
-        return pktBuilder.packet();
+    th.source = tcb->addr.dport;
+    th.dest = tcb->addr.sport;
+    th.seq = htonl(tcb->snd.nxt);
+    th.ack_seq = htonl(tcb->rcv.nxt);
+    th.doff = 5;
+    th.window = htons(tcb->rcv.wnd);
 }
 
-std::vector<uint8_t> buildFinPacket(std::shared_ptr<Tcb> tcb, Segment &seg)
+std::vector<uint8_t> buildAckPacket(std::shared_ptr<Tcb> tcb, uint32_t ack_seq)
+{
+    tcphdr resTcpHdr = {0};
+    setDefaultValueForTcpHeader(tcb, resTcpHdr);
+    resTcpHdr.ack_seq = htonl(ack_seq);
+    resTcpHdr.ack = 1;
+    resTcpHdr.check = caclTcpChecksum(&resTcpHdr, 20, tcb->addr.daddr, tcb->addr.saddr);
+    PacketBuilder pktBuilder(tcb->addr.daddr, tcb->addr.saddr,
+                                &resTcpHdr, 20);
+    return pktBuilder.packet();
+}
+
+std::vector<uint8_t> buildRstPacket(std::shared_ptr<Tcb> tcb)
 {
         tcphdr resTcpHdr = {0};
-        resTcpHdr.source = tcb->addr.dport;
-        resTcpHdr.dest = tcb->addr.sport;
-        resTcpHdr.seq = htonl(tcb->snd.nxt);
-        resTcpHdr.ack_seq = htonl(seg.seq() + 1);
-        resTcpHdr.doff = 5;
-        resTcpHdr.fin = 1;
-        resTcpHdr.ack = 1;
-        resTcpHdr.window = htons(RecvWnd);
+        setDefaultValueForTcpHeader(tcb, resTcpHdr);
+        resTcpHdr.rst = 1;
         resTcpHdr.check = caclTcpChecksum(&resTcpHdr, 20, tcb->addr.daddr, tcb->addr.saddr);
-
         PacketBuilder pktBuilder(tcb->addr.daddr, tcb->addr.saddr,
                                     &resTcpHdr, 20);
         return pktBuilder.packet();
@@ -66,19 +64,12 @@ bool isBetween(uint32_t seq, uint32_t start, uint32_t end)
     //should care about warpping.
     return seq >= start && seq < end;
 }
+
 struct Tcp::Impl
 {
     std::shared_ptr<INetDevice> netDev;
     std::map<SocketPair, std::shared_ptr<Tcb>> establishedConnection;
     std::map<uint16_t, std::shared_ptr<PassiveSock>> listener;
-   
-    void synRecvived(std::shared_ptr<Tcb> tcb, Segment &seg)
-    {
-        if(!seg.ack()){
-            return;
-        }
-        tcb->state = TcpState::ESTABLISHED;
-    }
 
     bool checkSequenceNumber(std::shared_ptr<Tcb> tcb, Segment &seg)
     {
@@ -87,7 +78,7 @@ struct Tcp::Impl
             //SEG.SEQ = RCV.NXT 
             if(seg.dataLen() > 0 || seg.seq() != tcb->rcv.nxt){
                 return false;
-        }
+            }
         }
         //RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
         if(!isBetween(seg.seq(), tcb->rcv.nxt, tcb->rcv.nxt + tcb->rcv.wnd)){
@@ -95,60 +86,185 @@ struct Tcp::Impl
         }
         return true;
     }
-
-        //peer close
-        if (seg.fin())
-        {
-            tcb->state = TcpState::CLOSE_WAIT;
-            tcphdr resTcpHdr = {0};
-            resTcpHdr.source = tcb->addr.dport;
-            resTcpHdr.dest = tcb->addr.sport;
-            resTcpHdr.seq = htonl(tcb->snd.nxt);
-            resTcpHdr.ack_seq = htonl(seg.seq() + 1);
-            resTcpHdr.doff = 5;
-            resTcpHdr.ack = 1;
-            resTcpHdr.window = htons(RecvWnd);
-            resTcpHdr.check = caclTcpChecksum(&resTcpHdr, 20, tcb->addr.daddr, tcb->addr.saddr);
-
+   
+    bool synRecvived(std::shared_ptr<Tcb> tcb, Segment &seg)
+    {
+        //SND.UNA =< SEG.ACK =< SND.NXT
+        if(seg.ackSeq() < tcb->snd.una ||
+           seg.ackSeq() > tcb->snd.nxt){
+            tcphdr th = {0};
+            setDefaultValueForTcpHeader(tcb, th);
+            th.seq = htonl(seg.ackSeq());
+            th.rst = 1;
+            th.check = caclTcpChecksum(&th, 20, tcb->addr.daddr, tcb->addr.saddr);
             PacketBuilder pktBuilder(tcb->addr.daddr, tcb->addr.saddr,
-                                     &resTcpHdr, 20);
-            std::vector<uint8_t> outBuffer = pktBuilder.packet();
-
-            size_t nwrite = netDev->send(outBuffer.data(), outBuffer.size());
-            if (nwrite == -1)
-            {
-                perror("write to netDevice:");
-                exit(1);
-            }
-            printf("write %zu bytes\n", nwrite);
-            outBuffer.clear();
-            
-            tcb->state = TcpState::LAST_ACK;
-            resTcpHdr.fin = 1;
-            resTcpHdr.check = 0;
-            resTcpHdr.check = caclTcpChecksum(&resTcpHdr, 20, tcb->addr.daddr, tcb->addr.saddr);
-
-            PacketBuilder pktBuilder1(tcb->addr.daddr, tcb->addr.saddr,
-                                     &resTcpHdr, 20);
-            outBuffer = pktBuilder1.packet();
+                                    &th, 20);
+            auto outBuffer = pktBuilder.packet();
             netDev->send(outBuffer.data(), outBuffer.size());
+            auto it = establishedConnection.find(tcb->addr);
+            establishedConnection.erase(it);
+            return false;
+        }
+        tcb->state = TcpState::ESTABLISHED;
+        if(seg.fin()){
+            tcb->rcv.nxt = seg.seq() + 1;
+            sendAcknowledgment(tcb);
+            tcb->state = TcpState::CLOSE_WAIT;
+        }
+        return true;
+    }
 
-            nwrite = netDev->send(outBuffer.data(), outBuffer.size());
-            if (nwrite == -1)
-            {
-                perror("write to netDevice:");
-                exit(1);
+    bool established(std::shared_ptr<Tcb> tcb, Segment &seg)
+    {
+        if(!handleAck(tcb, seg)){
+            return false;
+        }
+        if(seg.dataLen() > 0){
+            receiveData(tcb, seg);
+        }
+        if(seg.fin()){
+            tcb->rcv.nxt = seg.seq() + 1;
+            tcb->state = TcpState::CLOSE_WAIT;
+        }
+        sendAcknowledgment(tcb);
+        return true;
+    }
+
+    bool lastAck(std::shared_ptr<Tcb> tcb, Segment &seg)
+    {
+        if(!handleAck(tcb, seg)){
+            return false;
+        }
+        if(seg.fin()){
+            tcb->rcv.nxt = seg.seq() + 1;
+            sendAcknowledgment(tcb);
+        }
+        auto it = establishedConnection.find(tcb->addr);
+        establishedConnection.erase(it);
+        return true;
+    }
+
+    bool finWait1(std::shared_ptr<Tcb> tcb, Segment &seg)
+    {
+        if(!handleAck(tcb, seg)){
+            return false;
+        }
+        if(seg.ackSeq() == tcb->snd.nxt){
+            tcb->state = TcpState::FIN_WAIT2;
+        }
+        if(seg.dataLen() > 0){
+            sendAcknowledgment(tcb);
+        }
+        //Simultaneous Close
+        if(seg.fin()){
+            tcb->rcv.nxt = 1 + seg.seq(); 
+            sendAcknowledgment(tcb);
+            if(tcb->state == TcpState::FIN_WAIT2){
+                tcb->state = TcpState::TIME_WAIT;
+            }else{
+                tcb->state = TcpState::CLOSING;
             }
-            printf("write %zu bytes\n", nwrite);
-
-            tcb->snd.una = ntohl(resTcpHdr.seq);
+            return true;
         }
     }
 
-    void close(std::shared_ptr<Tcb> tcb, Segment &seg)
+    bool finWait2(std::shared_ptr<Tcb> tcb, Segment &seg)
     {
-        auto it = establishedConnection.find(tcb->addr);
-        establishedConnection.erase(it);
+        if(!handleAck(tcb, seg)){
+            return false;
+        }
+        if(seg.dataLen() > 0){
+            sendAcknowledgment(tcb);
+        }
+        if(seg.fin()){
+            tcb->state = TcpState::TIME_WAIT;
+            tcb->rcv.nxt = seg.seq() + 1;
+            sendAcknowledgment(tcb);
+        }
+        return true;
+
+    }
+
+    bool closeWait(std::shared_ptr<Tcb> tcb, Segment &seg)
+    {
+        if(!handleAck(tcb, seg)){
+            return false;
+        }
+        if(seg.fin()){
+            tcb->rcv.nxt = seg.seq() + 1;
+            sendAcknowledgment(tcb);
+        }
+    }
+
+    bool closing(std::shared_ptr<Tcb> tcb, Segment &seg)
+    {
+        if(!handleAck(tcb, seg)){
+            return false;
+        }
+        //if the ACK acknowledges our FIN then enter the TIME-WAIT state,
+        //otherwise ignore the segment.
+        if(seg.ackSeq() == tcb->snd.nxt){
+            tcb->state = TcpState::TIME_WAIT;
+        }
+        if(seg.fin()){
+            tcb->rcv.nxt = seg.seq() + 1;
+            sendAcknowledgment(tcb);
+        }
+        return true;
+    }
+
+    bool timeWait(std::shared_ptr<Tcb> tcb, Segment &seg)
+    {
+        //The only thing that can arrive in this state is a
+        //retransmission of the remote FIN.  Acknowledge it, and restart
+        //the 2 MSL timeout.
+        if(seg.fin()){
+            tcb->rcv.nxt = seg.seq() + 1;
+            sendAcknowledgment(tcb);
+        }
+        return true;
+    }
+
+    bool handleAck(std::shared_ptr<Tcb> tcb, Segment &seg)
+    {
+        //SND.UNA < SEG.ACK =< SND.NXT then, set SND.UNA <- SEG.ACK.
+        if (tcb->snd.una < seg.ackSeq() && seg.ackSeq() <= tcb->snd.nxt){
+            tcb->snd.una = seg.ackSeq();
+            //remove retransmission queue
+            //update send window
+            if (tcb->snd.wl1 <= seg.seq() && tcb->snd.wl2 <= seg.ackSeq())
+            {
+                tcb->snd.wnd = seg.wnd();
+                tcb->snd.wl1 = seg.seq();
+                tcb->snd.wl2 = seg.ackSeq();
+            }
+            return true;
+        }
+        else if (seg.ackSeq() < tcb->snd.una){
+            //ingore
+            return false;
+        }
+        else if(seg.ackSeq() > tcb->snd.nxt){
+            auto OutBuffer = buildAckPacket(tcb, seg.seq());
+            netDev->send(OutBuffer.data(), OutBuffer.size());
+            return false;
+        }
+        return false;
+    }
+
+    void receiveData(std::shared_ptr<Tcb> tcb, Segment &seg)
+    {
+        uint8_t *data = seg.data();
+        uint16_t minSize = seg.dataLen() >= tcb->rcv.wnd ? tcb->rcv.wnd : seg.dataLen();
+        tcb->recvQueue.insert(tcb->recvQueue.end(), data, data + minSize);
+        tcb->rcv.nxt += minSize;
+        tcb->rcv.wnd -= minSize; 
+    }
+
+    void sendAcknowledgment(std::shared_ptr<Tcb> tcb)
+    {
+        auto Outbuffer = buildAckPacket(tcb, tcb->rcv.nxt);
+        netDev->send(Outbuffer.data(), Outbuffer.size());
     }
 };
 
@@ -180,55 +296,109 @@ void Tcp::onPacket(std::shared_ptr<Tcb> tcb, std::vector<uint8_t> &buffer)
     iphdr *ih = (iphdr*)buffer.data();
     Segment seg(buffer.data() + ih->ihl * 4, ntohs(ih->tot_len) - ih->ihl * 4);
     
+    //step1
     if(!impl_->checkSequenceNumber(tcb, seg)){
-        std::vector<uint8_t> outBuffer = buildAckPacket(tcb, tcb->rcv.nxt);
-        impl_->netDev->send(outBuffer.data(), outBuffer.size());
+        if(seg.rst()){
             return;
         }
-    }else{
-
+        std::vector<uint8_t> outBuffer = buildAckPacket(tcb, tcb->rcv.nxt);
+        impl_->netDev->send(outBuffer.data(), outBuffer.size());
+        return;
     }
+
+    //step2
+    if(seg.rst()){
+        switch (tcb->state){
+            case TcpState::SYN_RECEIVED:
+            {
+            auto it = impl_->establishedConnection.find(tcb->addr);
+            impl_->establishedConnection.erase(it);
+            return;
+            }
+            case TcpState::SYN_SENT:
+            //Todo
+                break;
+            case TcpState::ESTABLISHED:
+            case TcpState::FIN_WAIT1:
+            case TcpState::FIN_WAIT2:
+            case TcpState::CLOSE_WAIT:
+            //Todo
+                break;
+            case TcpState::CLOSING:
+            case TcpState::LAST_ACK:
+            case TcpState::TIME_WAIT:
+            //Todo
+                break;
+            default:
+                return;
+        }
+    }
+
+    //step4
+    if(seg.syn()){
+        if(tcb->isSynchronizedState()){
+            auto outBuffer = buildRstPacket(tcb);
+            impl_->netDev->send(outBuffer.data(), outBuffer.size());
+            auto it = impl_->establishedConnection.find(tcb->addr);
+            impl_->establishedConnection.erase(it);
+        }
+        return;
+    }
+
     if(!seg.ack()){
         return;
     }
-    //accpetable ack
-    //SND.UNA < SEG.ACK =< SND.NXT
-    if(tcb->snd.una >= seg.ackSeq() && tcb->snd.nxt < seg.ackSeq()){
-            printf("unacceptable ack.\n");
-            return;
-    }
-
-    //RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
-    if(tcb->rcv.nxt > (seg.seq() + seg.dataLen() - 1) &&
-        (tcb->rcv.nxt + tcb->rcv.wnd) <= (seg.seq() + seg.dataLen() - 1)){
-            printf("seg not in recv window\n");
-            return;
-    }
-    tcb->rcv.nxt = seg.seq() + seg.dataLen();
-
+    
+    //step5
     switch (tcb->state)
     {
     case TcpState::SYN_RECEIVED:
-        impl_->synRecvived(tcb, seg);
+        if(!impl_->synRecvived(tcb, seg)){
+            return;
+        }
         break;
     case TcpState::ESTABLISHED:
-        impl_->established(tcb, seg);
+        if(!impl_->established(tcb, seg)){
+            return;
+        }
         break;
     case TcpState::LAST_ACK:
-        impl_->close(tcb, seg);
+        if(impl_->lastAck(tcb, seg)){
+            return;
+        }
+        break;
+    case TcpState::FIN_WAIT1:
+        if(!impl_->finWait1(tcb, seg)){
+            return;
+        }
+        break;
+    case TcpState::FIN_WAIT2:
+        if(!impl_->finWait2(tcb, seg)){
+            return;
+        }
+        break;
+    case TcpState::CLOSE_WAIT:
+        if(!impl_->closeWait(tcb, seg)){
+            return;
+        }
+        break;
+    case TcpState::CLOSING:
+        if(!impl_->closing(tcb, seg)){
+            return;
+        }
+        break;
+    case TcpState::TIME_WAIT:
+        if(!impl_->timeWait(tcb, seg)){
+            return;
+        }
+        break;
     default:
         break;
     }
-    std::cout<< *tcb;
 }
 
 void Tcp::onAccept(std::vector<uint8_t> &buffer)
-{
-    if(buffer.size() < 40){
-        printf("packet to small\n");
-        return;
-    }
-     
+{ 
     iphdr *inetHdr = (iphdr*)buffer.data();
     tcphdr *tcpHdr = (tcphdr*)(buffer.data() + inetHdr->ihl * 4);
     
@@ -253,13 +423,11 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
         th.dest = tcpHdr->source;
         th.th_off = 5;
         th.seq = tcpHdr->ack_seq;
-        th.ack = 0;
         th.rst = 1;
         th.window = 1234;
         th.check = caclTcpChecksum(&th, 20, 0xa000001, 0xa000002);
         PacketBuilder pb(0xa000001, 0xa000002, &th, 20);
         std::vector<uint8_t> packet = pb.packet();
-
         impl_->netDev->send(packet.data(), packet.size());
         return;
     }
@@ -274,25 +442,16 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
         inetHdr->saddr,
         tcpHdr->source,
         inetHdr->daddr,
-        tcpHdr->source,
         tcpHdr->dest
     };
     std::shared_ptr<Tcb> tcb = std::make_shared<Tcb>(sp, tcpHdr);
 
-    tcb->rcv.wnd = RecvWnd;
-    tcb->rcv.irs = ntohl(tcpHdr->seq);
-    tcb->rcv.nxt = tcpHdr->seq + 1;
-
     //construct syn,ack handshake
     tcphdr resTcpHdr = {0};
-    resTcpHdr.source = tcpHdr->dest;
-    resTcpHdr.dest = tcpHdr->source;
+    setDefaultValueForTcpHeader(tcb, resTcpHdr);
     resTcpHdr.seq = htonl(tcb->snd.iss);
-    resTcpHdr.ack_seq = htonl(tcb->rcv.nxt);
-    resTcpHdr.doff = 5;
     resTcpHdr.ack = 1;  
     resTcpHdr.syn = 1; 
-    resTcpHdr.window = htons(RecvWnd);
     resTcpHdr.check = caclTcpChecksum(&resTcpHdr, 20, inetHdr->daddr, inetHdr->saddr);
 
     PacketBuilder pktBuilder(inetHdr->daddr, inetHdr->saddr,
@@ -305,8 +464,6 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
     tcb->snd.nxt = tcb->snd.iss + 1;
     tcb->snd.una = tcb->snd.iss;
     tcb->state = TcpState::SYN_RECEIVED;
-
-    std::cout<< *tcb;
 
     //add tcb to map
     impl_->establishedConnection[tcb->addr] = tcb;
@@ -358,29 +515,29 @@ void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
     if (inetHdr->version != 4)
     {
         return;
-		}
+    }
     if (inetHdr->protocol != 0x06)
     {
         return;
-		}
+    }
     tcphdr *tcpHdr = (tcphdr *)(buffer.data() + inetHdr->ihl * 4);
-		
-		SocketPair pair = {
-			inetHdr->saddr,
+
+    SocketPair pair = {
+        inetHdr->saddr,
         tcpHdr->source,
-			inetHdr->daddr,
+        inetHdr->daddr,
         tcpHdr->dest};
-		
+
     if (isEstablished(pair))
     {
-			std::shared_ptr<Tcb> tcb = getEstablishedConnection(pair);
-			onPacket(tcb, buffer);
+        std::shared_ptr<Tcb> tcb = getEstablishedConnection(pair);
+        onPacket(tcb, buffer);
     }
     else if (hasBoundPort(ntohs(tcpHdr->dest)))
     {
-			onAccept(buffer);
-		}
+        onAccept(buffer);
+    }
     else
     {
-	}
+    }
 }
