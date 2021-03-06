@@ -86,6 +86,45 @@ struct Tcp::Impl
         }
         return true;
     }
+
+    void synSent(std::shared_ptr<Tcb> tcb, Segment &seg)
+    {
+        if(seg.ackSeq() <= tcb->snd.iss || seg.ackSeq() > tcb->snd.nxt){
+            if(!seg.rst()){
+                sendAckErrorReset(tcb, seg.ackSeq());
+            }
+            return;
+        }
+        if(tcb->snd.una > seg.ackSeq() && seg.ackSeq() > tcb->snd.nxt){
+            return;
+        }
+        if(seg.rst()){
+            //notify user
+            deleteTcb(tcb);
+        }
+        if(seg.syn()){
+            if(seg.ack() || (!seg.rst() && !seg.ack())){
+                tcb->rcv.nxt = seg.seq() + 1;
+                tcb->rcv.irs = seg.seq();
+                if(seg.ack()){
+                    tcb->snd.una = seg.ackSeq();
+                    //clear retransmission queue
+                }
+                if(tcb->snd.una > tcb->snd.iss){
+                    tcb->state = TcpState::ESTABLISHED;
+                    sendAcknowledgment(tcb);
+                }else{
+                    tcb->state = TcpState::SYN_RECEIVED;
+                    tcphdr th = {0};
+                    setDefaultValueForTcpHeader(tcb, th);
+                    th.seq = tcb->snd.iss;
+                    th.syn = 1;
+                    th.ack = 1;
+                    calcTcpAndSend(tcb, th);
+                }
+            }
+        }
+    }
    
     bool synRecvived(std::shared_ptr<Tcb> tcb, Segment &seg)
     {
@@ -266,6 +305,30 @@ struct Tcp::Impl
         auto Outbuffer = buildAckPacket(tcb, tcb->rcv.nxt);
         netDev->send(Outbuffer.data(), Outbuffer.size());
     }
+
+    void sendAckErrorReset(std::shared_ptr<Tcb> tcb, uint32_t ack)
+    {
+        tcphdr th = {0};
+        setDefaultValueForTcpHeader(tcb, th);
+        th.seq = htonl(ack);
+        th.rst = 1;
+        th.check = caclTcpChecksum(&th, 20, tcb->addr.daddr, tcb->addr.saddr);
+        PacketBuilder pktBuilder(tcb->addr.daddr, tcb->addr.saddr,&th, 20);
+        auto outBuffer = pktBuilder.packet();
+        netDev->send(outBuffer.data(), outBuffer.size());
+    }
+
+    void deleteTcb(std::shared_ptr<Tcb> tcb){
+        auto it = establishedConnection.find(tcb->addr);
+        establishedConnection.erase(it);
+    }
+
+    void calcTcpAndSend(std::shared_ptr<Tcb> tcb, tcphdr &th){
+        th.check = caclTcpChecksum(&th, 20, tcb->addr.daddr, tcb->addr.saddr);
+        PacketBuilder pktBuilder(tcb->addr.daddr, tcb->addr.saddr,&th, 20);
+        auto outBuffer = pktBuilder.packet();
+        netDev->send(outBuffer.data(), outBuffer.size());
+    }
 };
 
 Tcp::Tcp(std::shared_ptr<INetDevice> netDev)
@@ -295,6 +358,11 @@ void Tcp::onPacket(std::shared_ptr<Tcb> tcb, std::vector<uint8_t> &buffer)
 {
     iphdr *ih = (iphdr*)buffer.data();
     Segment seg(buffer.data() + ih->ihl * 4, ntohs(ih->tot_len) - ih->ihl * 4);
+
+    if(tcb->state == TcpState::SYN_SENT){
+        impl_->synSent(tcb, seg);
+        return;
+    }
     
     //step1
     if(!impl_->checkSequenceNumber(tcb, seg)){
