@@ -26,6 +26,19 @@ struct PassiveSock{
     std::vector<ConnectionSock> backlog;
 };
 
+void printTcphdrInfo(tcphdr &th)
+{
+    printf("%u > %u ", ntohs(th.source), ntohs(th.dest));
+    printf("seq %u, ack %u win %u", ntohl(th.seq), ntohl(th.ack_seq), ntohs(th.window));
+    printf("[%s%s%s%s%s%s]", th.urg ? "U" : "",
+                                th.ack ? "." : "",
+                                th.psh ? "P" : "",
+                                th.rst ? "R" : "",
+                                th.syn ? "S" : "",
+                                th.fin ? "F" : "");
+    printf("\n");
+}
+
 void setDefaultValueForTcpHeader(std::shared_ptr<Tcb> tcb, tcphdr &th)
 {
     th.source = tcb->addr.dport;
@@ -36,16 +49,14 @@ void setDefaultValueForTcpHeader(std::shared_ptr<Tcb> tcb, tcphdr &th)
     th.window = htons(tcb->rcv.wnd);
 }
 
-std::vector<uint8_t> buildAckPacket(std::shared_ptr<Tcb> tcb, uint32_t ack_seq)
+tcphdr buildAckSegment(std::shared_ptr<Tcb> tcb, uint32_t ack_seq)
 {
     tcphdr resTcpHdr = {0};
     setDefaultValueForTcpHeader(tcb, resTcpHdr);
     resTcpHdr.ack_seq = htonl(ack_seq);
     resTcpHdr.ack = 1;
     resTcpHdr.check = caclTcpChecksum(&resTcpHdr, 20, tcb->addr.daddr, tcb->addr.saddr);
-    PacketBuilder pktBuilder(tcb->addr.daddr, tcb->addr.saddr,
-                                &resTcpHdr, 20);
-    return pktBuilder.packet();
+    return resTcpHdr;
 }
 
 std::vector<uint8_t> buildRstPacket(std::shared_ptr<Tcb> tcb)
@@ -135,11 +146,7 @@ struct Tcp::Impl
             setDefaultValueForTcpHeader(tcb, th);
             th.seq = htonl(seg.ackSeq());
             th.rst = 1;
-            th.check = caclTcpChecksum(&th, 20, tcb->addr.daddr, tcb->addr.saddr);
-            PacketBuilder pktBuilder(tcb->addr.daddr, tcb->addr.saddr,
-                                    &th, 20);
-            auto outBuffer = pktBuilder.packet();
-            netDev->send(outBuffer.data(), outBuffer.size());
+            calcTcpAndSend(tcb, th);
             auto it = establishedConnection.find(tcb->addr);
             establishedConnection.erase(it);
             return false;
@@ -205,6 +212,7 @@ struct Tcp::Impl
             }
             return true;
         }
+        return true;
     }
 
     bool finWait2(std::shared_ptr<Tcb> tcb, Segment &seg)
@@ -233,6 +241,7 @@ struct Tcp::Impl
             tcb->rcv.nxt = seg.seq() + 1;
             sendAcknowledgment(tcb);
         }
+        return true;
     }
 
     bool closing(std::shared_ptr<Tcb> tcb, Segment &seg)
@@ -281,14 +290,14 @@ struct Tcp::Impl
         }
         else if (seg.ackSeq() < tcb->snd.una){
             //ingore
-            return false;
+            return true;
         }
         else if(seg.ackSeq() > tcb->snd.nxt){
-            auto OutBuffer = buildAckPacket(tcb, seg.seq());
-            netDev->send(OutBuffer.data(), OutBuffer.size());
+            auto th = buildAckSegment(tcb, seg.seq());
+            sendPacket(tcb, th);
             return false;
         }
-        return false;
+        return true;
     }
 
     void receiveData(std::shared_ptr<Tcb> tcb, Segment &seg)
@@ -302,8 +311,8 @@ struct Tcp::Impl
 
     void sendAcknowledgment(std::shared_ptr<Tcb> tcb)
     {
-        auto Outbuffer = buildAckPacket(tcb, tcb->rcv.nxt);
-        netDev->send(Outbuffer.data(), Outbuffer.size());
+        auto th = buildAckSegment(tcb, tcb->rcv.nxt);
+        sendPacket(tcb, th);
     }
 
     void sendAckErrorReset(std::shared_ptr<Tcb> tcb, uint32_t ack)
@@ -312,10 +321,7 @@ struct Tcp::Impl
         setDefaultValueForTcpHeader(tcb, th);
         th.seq = htonl(ack);
         th.rst = 1;
-        th.check = caclTcpChecksum(&th, 20, tcb->addr.daddr, tcb->addr.saddr);
-        PacketBuilder pktBuilder(tcb->addr.daddr, tcb->addr.saddr,&th, 20);
-        auto outBuffer = pktBuilder.packet();
-        netDev->send(outBuffer.data(), outBuffer.size());
+        calcTcpAndSend(tcb, th);
     }
 
     void deleteTcb(std::shared_ptr<Tcb> tcb){
@@ -325,6 +331,13 @@ struct Tcp::Impl
 
     void calcTcpAndSend(std::shared_ptr<Tcb> tcb, tcphdr &th){
         th.check = caclTcpChecksum(&th, 20, tcb->addr.daddr, tcb->addr.saddr);
+        sendPacket(tcb,th);
+    }
+
+    void sendPacket(std::shared_ptr<Tcb> tcb, tcphdr &th)
+    {
+        printf("Send ");
+        printTcphdrInfo(th);
         PacketBuilder pktBuilder(tcb->addr.daddr, tcb->addr.saddr,&th, 20);
         auto outBuffer = pktBuilder.packet();
         netDev->send(outBuffer.data(), outBuffer.size());
@@ -369,8 +382,8 @@ void Tcp::onPacket(std::shared_ptr<Tcb> tcb, std::vector<uint8_t> &buffer)
         if(seg.rst()){
             return;
         }
-        std::vector<uint8_t> outBuffer = buildAckPacket(tcb, tcb->rcv.nxt);
-        impl_->netDev->send(outBuffer.data(), outBuffer.size());
+        auto th = buildAckSegment(tcb, tcb->rcv.nxt);
+        impl_->sendPacket(tcb, th);
         return;
     }
 
@@ -383,19 +396,18 @@ void Tcp::onPacket(std::shared_ptr<Tcb> tcb, std::vector<uint8_t> &buffer)
             impl_->establishedConnection.erase(it);
             return;
             }
-            case TcpState::SYN_SENT:
-            //Todo
-                break;
             case TcpState::ESTABLISHED:
             case TcpState::FIN_WAIT1:
             case TcpState::FIN_WAIT2:
             case TcpState::CLOSE_WAIT:
             //Todo
+                impl_->deleteTcb(tcb);
                 break;
             case TcpState::CLOSING:
             case TcpState::LAST_ACK:
             case TcpState::TIME_WAIT:
             //Todo
+                impl_->deleteTcb(tcb);
                 break;
             default:
                 return;
@@ -496,6 +508,7 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
         th.check = caclTcpChecksum(&th, 20, 0xa000001, 0xa000002);
         PacketBuilder pb(0xa000001, 0xa000002, &th, 20);
         std::vector<uint8_t> packet = pb.packet();
+        printTcphdrInfo(th);
         impl_->netDev->send(packet.data(), packet.size());
         return;
     }
@@ -525,7 +538,7 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
     PacketBuilder pktBuilder(inetHdr->daddr, inetHdr->saddr,
                             &resTcpHdr, 20);
     std::vector<uint8_t> outBuffer = pktBuilder.packet();
-    
+    printTcphdrInfo(resTcpHdr);
     impl_->netDev->send(outBuffer.data(), outBuffer.size());
     
     //update tcb
@@ -548,7 +561,7 @@ void Tcp::run()
 			perror("Reading from interface");
 			exit(1);
 		}
-		printf("got %d bytes\n", nread);
+		packetProcessing(buffer);
 	}
 }
 		
@@ -589,6 +602,8 @@ void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
         return;
     }
     tcphdr *tcpHdr = (tcphdr *)(buffer.data() + inetHdr->ihl * 4);
+    printf("Recv ");
+    printTcphdrInfo(*tcpHdr);
 
     SocketPair pair = {
         inetHdr->saddr,

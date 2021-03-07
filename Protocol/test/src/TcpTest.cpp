@@ -460,3 +460,41 @@ TEST_F(TcpTest, segmentArriveInSynSent)
     ASSERT_EQ(hdr->ack_seq, htonl(0x4568));
 }
 
+TEST_F(TcpTest, receiveContinuousDataInEstablishedState)
+{
+    std::shared_ptr<Tcb> tcb = std::make_shared<Tcb>(sp);
+    tcb->state = TcpState::ESTABLISHED;
+    tcb->snd.nxt = 0x1234;
+    tcb->snd.una = 0x1233;
+    tcb->rcv.wnd = 1024;
+    tcb->rcv.nxt = 0x4567;
+    ASSERT_TRUE(tcp->addConnection(tcb));
+
+    tcphdr th = {0};
+    th.source = sp.sport;
+    th.dest = sp.dport;
+    th.doff = 5;
+    th.seq = htonl(0x4567);
+    th.ack_seq = htonl(0x1234);
+    th.ack = 1;
+    th.window = 1234;
+    uint8_t *payload = constructSegmentCarrieData(&th, 1000);
+    th.check = caclTcpChecksum(&th, 1020, sp.saddr, sp.daddr);
+    PacketBuilder pb(sp.saddr, sp.daddr, &th, 1020);
+    std::vector<uint8_t> packet = pb.packet();
+    netDev->recv(packet.data(), packet.size());
+
+    //second data
+    th.seq = htonl(0x4567 + 1000);
+    th.check = caclTcpChecksum(&th, 1020, sp.saddr, sp.daddr);
+    PacketBuilder pb1(sp.saddr, sp.daddr, &th, 1020);
+    std::vector<uint8_t> packet1 = pb1.packet();
+    netDev->recv(packet1.data(), packet1.size());
+
+    //ack return
+    ASSERT_EQ(netDev->outData.size(), 2);
+    std::vector<uint8_t> data = netDev->outData[1];
+    tcphdr *hdr = (tcphdr *)(data.data() + sizeof(iphdr));
+    ASSERT_EQ(hdr->ack, 1);
+    ASSERT_EQ(hdr->ack_seq, htonl(0x4567 + 1024));
+}
