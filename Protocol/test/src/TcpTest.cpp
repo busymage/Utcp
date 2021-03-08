@@ -2,6 +2,7 @@
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <Protocol/INetDevice.hpp>
+#include <Protocol/PassiveSock.hpp>
 #include <Protocol/Tcb.hpp>
 #include <Protocol/Tcp.hpp>
 #include <Protocol/ChecksumCalc.hpp>
@@ -52,16 +53,17 @@ class TcpTest : public testing::Test
 {
 public:
     std::shared_ptr<MockNetDev> netDev;
-    Tcp *tcp;
+    std::shared_ptr<Tcp> tcp;
     SocketPair sp;
 
 public:
     virtual void SetUp()
     {
         netDev = std::make_shared<MockNetDev>();
-        tcp = new Tcp(netDev);
-        netDev->tcp = tcp;
-        tcp->addListener(9981);
+        tcp = std::make_shared< Tcp>(netDev);
+        netDev->tcp = tcp.get();
+        std::shared_ptr<PassiveSock> ps = std::make_shared<PassiveSock>(tcp);
+        ps->bind(9981);
         sp = {
             0xa000001,
             htons(999),
@@ -72,7 +74,6 @@ public:
 
     virtual void TearDown()
     {
-        delete tcp;
     }
 };
 

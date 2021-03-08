@@ -1,10 +1,13 @@
 #include <Protocol/PacketBuilder.hpp>
 #include <Protocol/ChecksumCalc.hpp>
 #include <Protocol/INetDevice.hpp>
+#include <Protocol/PassiveSock.hpp>
 #include <Protocol/Segment.hpp>
 #include <Protocol/SocketPair.hpp>
 #include <Protocol/Tcb.hpp>
 #include <Protocol/Tcp.hpp>
+#include <chrono>
+#include <future>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -18,12 +21,6 @@ constexpr const uint16_t RecvWnd = 65535;
 struct ConnectionSock{
     std::vector<char> sendBuffer;
     std::vector<char> recvBuffer;
-};
-
-struct PassiveSock{
-    //pid_t process;
-    uint16_t port;
-    std::vector<ConnectionSock> backlog;
 };
 
 void printTcphdrInfo(tcphdr &th)
@@ -79,8 +76,19 @@ bool isBetween(uint32_t seq, uint32_t start, uint32_t end)
 struct Tcp::Impl
 {
     std::shared_ptr<INetDevice> netDev;
+    
     std::map<SocketPair, std::shared_ptr<Tcb>> establishedConnection;
+    
     std::map<uint16_t, std::shared_ptr<PassiveSock>> listener;
+
+    bool start = false;
+
+    std::thread workerThread;
+
+    //stop signal
+    std::promise<bool> stop;
+
+    
 
     bool checkSequenceNumber(std::shared_ptr<Tcb> tcb, Segment &seg)
     {
@@ -350,7 +358,10 @@ Tcp::Tcp(std::shared_ptr<INetDevice> netDev)
     impl_->netDev = netDev;
 }
 
-Tcp::~Tcp() = default;
+Tcp::~Tcp()
+{
+    stop();
+}
 
 bool Tcp::isEstablished(SocketPair &pair)const
 {
@@ -552,28 +563,38 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
 
 void Tcp::run()
 {
-    while (1)
-	{
-		std::vector<uint8_t> buffer(1500);
-		int nread = impl_->netDev->recv(buffer.data(), buffer.size());
-		if (nread < 0)
-		{
-			perror("Reading from interface");
-			exit(1);
-		}
-		packetProcessing(buffer);
-	}
+    if(impl_->start){
+        return;
+    }
+    impl_->start = true;
+    std::future<bool> stop = impl_->stop.get_future();
+    impl_->workerThread = std::thread(&Tcp::worker, this, std::move(stop));
+}
+
+void Tcp::stop()
+{
+    if(impl_->start){
+        impl_->stop.set_value(true);
+        impl_->start = false;
+        impl_->workerThread.join();
+    }
 }
 		
-bool Tcp::addListener(uint16_t port)
+bool Tcp::addListener(std::shared_ptr<PassiveSock> sock)
 {
-    if(impl_->listener.find(port) != impl_->listener.end()){
+    if(impl_->listener.find(sock->port()) != impl_->listener.end()){
         return false;
     }
-    std::shared_ptr<PassiveSock> ps = std::make_shared<PassiveSock>();
-    ps->port = port;
-    impl_->listener[port] = ps;
+    impl_->listener[sock->port()] = sock;
     return true;
+}
+
+void Tcp::removeListener(std::shared_ptr<PassiveSock> sock)
+{
+    auto it = impl_->listener.find(sock->port());
+    if(it != impl_->listener.end()){
+        impl_->listener.erase(it);
+    }
 }
 
 bool Tcp::addConnection(std::shared_ptr<Tcb> tcb)
@@ -623,4 +644,21 @@ void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
     else
     {
     }
+}
+
+void Tcp::worker(std::future<bool> stop)
+{
+    printf("Tcp start running.\n");
+    while (stop.wait_for(std::chrono::milliseconds(1)) != std::future_status::ready)
+	{
+		std::vector<uint8_t> buffer(1500);
+		int nread = impl_->netDev->recv(buffer.data(), buffer.size());
+		if (nread < 0)
+		{
+			perror("Reading from interface");
+			exit(1);
+		}
+		packetProcessing(buffer);
+	}
+    printf("Tcp stop running.\n");
 }

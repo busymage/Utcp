@@ -1,11 +1,13 @@
 #ifndef UTCP_TCP_HPP
 #define UTCP_TCP_HPP
 
+#include <future>
 #include <memory>
 #include <Protocol/SocketPair.hpp>
 #include <vector>
 
 class INetDevice;
+class PassiveSock;
 struct Tcb;
 
 class Tcp
@@ -26,7 +28,11 @@ public:
 
     void run();
 
-    bool addListener(uint16_t port);
+    void stop();
+
+    bool addListener(std::shared_ptr<PassiveSock> sock);
+
+    void removeListener(std::shared_ptr<PassiveSock> sock);
 
     bool addConnection(std::shared_ptr<Tcb> tcb);
 
@@ -35,5 +41,7 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+
+    void worker(std::future<bool> stop);
 };
 #endif
