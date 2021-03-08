@@ -4,9 +4,11 @@
 #include <future>
 #include <memory>
 #include <Protocol/SocketPair.hpp>
+#include <thread>
 #include <vector>
 
 class INetDevice;
+class ConnectionSock;
 class PassiveSock;
 struct Tcb;
 
@@ -18,7 +20,7 @@ public:
 
     bool isEstablished(SocketPair &pair)const;
     
-    std::shared_ptr<Tcb> &getEstablishedConnection(SocketPair &pair);
+    std::shared_ptr<ConnectionSock> getEstablishedConnection(SocketPair &pair);
 
     bool hasBoundPort(uint16_t port) const;
 
@@ -32,11 +34,15 @@ public:
 
     bool addListener(std::shared_ptr<PassiveSock> sock);
 
-    void removeListener(std::shared_ptr<PassiveSock> sock);
+    void removeListener(uint16_t port);
 
-    bool addConnection(std::shared_ptr<Tcb> tcb);
+    bool addConnection(std::shared_ptr<ConnectionSock> ConnectionSock);
+
+    void removeConnection(SocketPair &sockname);
 
     void packetProcessing(std::vector<uint8_t> &buffer);
+
+    void send(std::shared_ptr<Tcb> tcb); 
 
 private:
     struct Impl;

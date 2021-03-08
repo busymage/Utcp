@@ -1,7 +1,7 @@
 #ifndef UTCP_TCB_HPP
 #define UTCP_TCB_HPP
 
-#include <deque>
+#include <vector>
 #include <netinet/tcp.h>
 #include <ostream>
 #include <Protocol/SocketPair.hpp>
@@ -62,8 +62,8 @@ struct Tcb{
     TcpState state;
     SND snd;
     RCV rcv;
-    std::deque<uint8_t> sndQueue;
-    std::deque<uint8_t> recvQueue;
+    std::vector<uint8_t> sndQueue;
+    std::vector<uint8_t> recvQueue;
 
     Tcb(SocketPair &addr);
     Tcb(SocketPair &addr, tcphdr *th);

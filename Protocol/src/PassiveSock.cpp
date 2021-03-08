@@ -11,10 +11,10 @@ struct PassiveSock::Impl{
     std::shared_ptr<Tcb> tcb;
     std::queue<std::shared_ptr<ISock>> backlog;
 
-    std::shared_ptr<Tcp> tcp;
+    Tcp *tcp;
 };
 
-PassiveSock::PassiveSock(std::shared_ptr<Tcp> tcp)
+PassiveSock::PassiveSock(Tcp *tcp)
 :impl_(new Impl)
 {
     impl_->tcp = tcp;
@@ -28,12 +28,11 @@ PassiveSock::PassiveSock(std::shared_ptr<Tcp> tcp)
 }
 
 PassiveSock::~PassiveSock(){
-    //close();
 }
 
 int PassiveSock::bind(uint16_t port)
 {
-    impl_->tcb->addr.sport = port;
+    impl_->tcb->addr.sport = htons(port);
     return impl_->tcp->addListener(shared_from_this());
 }
 int PassiveSock::connect(uint32_t addr, uint16_t port)
@@ -62,7 +61,7 @@ int PassiveSock::recv(std::vector<uint8_t> &buffer)
 
 int PassiveSock::close()
 {
-    impl_->tcp->removeListener(shared_from_this());
+    impl_->tcp->removeListener(impl_->tcb->addr.sport);
     return 0;
 }
 

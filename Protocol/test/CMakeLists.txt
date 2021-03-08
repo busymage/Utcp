@@ -6,6 +6,7 @@ set(Sources src/TcpTest.cpp)
 
 add_executable(TcpTest src/TcpTest.cpp)
 add_executable(PacketBuilderTest src/PacketBuilderTest.cpp)
+add_executable(ConnectionSockTest src/ConnectionSockTest.cpp)
 add_executable(PassiveSockTest src/PassiveSockTest.cpp)
 
 target_link_libraries(TcpTest PUBLIC
@@ -23,6 +24,11 @@ target_link_libraries(PassiveSockTest PUBLIC
     GTest::Main
     Protocol)
 
+target_link_libraries(ConnectionSockTest PUBLIC
+    GTest::GTest
+    GTest::Main
+    Protocol)
+
 add_test(
     NAME TcpTest
     COMMAND TcpTest)
@@ -34,3 +40,7 @@ add_test(
 add_test(
     NAME PassiveSockTest
     COMMAND PassiveSockTest)
+
+add_test(
+    NAME ConnectionSockTest
+    COMMAND ConnectionSockTest)

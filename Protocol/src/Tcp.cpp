@@ -1,5 +1,6 @@
 #include <Protocol/PacketBuilder.hpp>
 #include <Protocol/ChecksumCalc.hpp>
+#include <Protocol/ConnectionSock.hpp>
 #include <Protocol/INetDevice.hpp>
 #include <Protocol/PassiveSock.hpp>
 #include <Protocol/Segment.hpp>
@@ -18,10 +19,7 @@
 
 constexpr const uint16_t RecvWnd = 65535;
 
-struct ConnectionSock{
-    std::vector<char> sendBuffer;
-    std::vector<char> recvBuffer;
-};
+constexpr const uint16_t MSS = 536;
 
 void printTcphdrInfo(tcphdr &th)
 {
@@ -73,11 +71,17 @@ bool isBetween(uint32_t seq, uint32_t start, uint32_t end)
     return seq >= start && seq < end;
 }
 
+template<typename T>
+T min(T lhs, T rhs)
+{
+    return lhs <= rhs ? lhs : rhs;
+}
+
 struct Tcp::Impl
 {
     std::shared_ptr<INetDevice> netDev;
     
-    std::map<SocketPair, std::shared_ptr<Tcb>> establishedConnection;
+    std::map<SocketPair, std::shared_ptr<ConnectionSock>> establishedConnection;
     
     std::map<uint16_t, std::shared_ptr<PassiveSock>> listener;
 
@@ -87,8 +91,6 @@ struct Tcp::Impl
 
     //stop signal
     std::promise<bool> stop;
-
-    
 
     bool checkSequenceNumber(std::shared_ptr<Tcb> tcb, Segment &seg)
     {
@@ -361,6 +363,13 @@ Tcp::Tcp(std::shared_ptr<INetDevice> netDev)
 Tcp::~Tcp()
 {
     stop();
+    if(impl_->workerThread.joinable()){
+        impl_->workerThread.join();
+    }
+
+    //remove all all sock tcp holds.
+    impl_->listener.clear();
+    impl_->establishedConnection.clear();
 }
 
 bool Tcp::isEstablished(SocketPair &pair)const
@@ -368,14 +377,17 @@ bool Tcp::isEstablished(SocketPair &pair)const
     return  impl_->establishedConnection.find(pair) != impl_->establishedConnection.end();
 }
 
-std::shared_ptr<Tcb> &Tcp::getEstablishedConnection(SocketPair &pair)
+std::shared_ptr<ConnectionSock> Tcp::getEstablishedConnection(SocketPair &pair)
 {
+    if(isEstablished(pair)){
     return impl_->establishedConnection[pair];
+}
+    return {};
 }
 
 bool Tcp::hasBoundPort(uint16_t port) const
 {
-    return impl_->listener.find(port) != impl_->listener.end();
+    return impl_->listener.find(htons(port)) != impl_->listener.end();
 }
 
 void Tcp::onPacket(std::shared_ptr<Tcb> tcb, std::vector<uint8_t> &buffer)
@@ -557,8 +569,8 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
     tcb->snd.una = tcb->snd.iss;
     tcb->state = TcpState::SYN_RECEIVED;
 
-    //add tcb to map
-    impl_->establishedConnection[tcb->addr] = tcb;
+    //add connection to map
+    impl_->establishedConnection[tcb->addr] = std::make_shared<ConnectionSock>(this, tcb);
 }
 
 void Tcp::run()
@@ -576,7 +588,6 @@ void Tcp::stop()
     if(impl_->start){
         impl_->stop.set_value(true);
         impl_->start = false;
-        impl_->workerThread.join();
     }
 }
 		
@@ -589,21 +600,29 @@ bool Tcp::addListener(std::shared_ptr<PassiveSock> sock)
     return true;
 }
 
-void Tcp::removeListener(std::shared_ptr<PassiveSock> sock)
+void Tcp::removeListener(uint16_t port)
 {
-    auto it = impl_->listener.find(sock->port());
+    auto it = impl_->listener.find(port);
     if(it != impl_->listener.end()){
         impl_->listener.erase(it);
     }
 }
 
-bool Tcp::addConnection(std::shared_ptr<Tcb> tcb)
+bool Tcp::addConnection(std::shared_ptr<ConnectionSock> sock)
 {
-    if(impl_->establishedConnection.find(tcb->addr) != impl_->establishedConnection.end()){
+    if(impl_->establishedConnection.find(sock->name()) != impl_->establishedConnection.end()){
         return false;
     }
-    impl_->establishedConnection[tcb->addr] = tcb;
+    impl_->establishedConnection[sock->name()] = sock;
     return true;
+}
+
+void Tcp::removeConnection(SocketPair &sockname)
+{
+    auto it = impl_->establishedConnection.find(sockname);
+    if(it != impl_->establishedConnection.end()){
+        impl_->establishedConnection.erase(it);
+    }
 }
 
 void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
@@ -627,14 +646,14 @@ void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
     printTcphdrInfo(*tcpHdr);
 
     SocketPair pair = {
-        inetHdr->saddr,
-        tcpHdr->source,
-        inetHdr->daddr,
-        tcpHdr->dest};
+        inetHdr->daddr,     //local
+        tcpHdr->dest,
+        inetHdr->saddr,     //foregin
+        tcpHdr->source};
 
     if (isEstablished(pair))
     {
-        std::shared_ptr<Tcb> tcb = getEstablishedConnection(pair);
+        std::shared_ptr<Tcb> tcb = getEstablishedConnection(pair)->getTcb();
         onPacket(tcb, buffer);
     }
     else if (hasBoundPort(ntohs(tcpHdr->dest)))
@@ -661,4 +680,29 @@ void Tcp::worker(std::future<bool> stop)
 		packetProcessing(buffer);
 	}
     printf("Tcp stop running.\n");
+}
+
+void Tcp::send(std::shared_ptr<Tcb> tcb)
+{
+    uint16_t totalLen = tcb->sndQueue.size();
+    uint16_t haveWritten = 0;
+    while (haveWritten < totalLen)
+    {
+        uint16_t segLen = min<uint16_t>(MSS, tcb->sndQueue.size());      
+        uint8_t *data = new uint8_t[sizeof(tcphdr) + segLen];
+        if(data == nullptr){
+            perror("malloc");
+            exit(1);
+        }
+        tcphdr *th = (tcphdr*)data;
+        uint8_t *payload = data + sizeof(tcphdr);
+        setDefaultValueForTcpHeader(tcb, *th);
+        th->ack = 1;
+        memcpy(payload, tcb->sndQueue.data(),segLen);
+        tcb->sndQueue.erase(tcb->sndQueue.begin(), tcb->sndQueue.begin() + segLen);
+        impl_->calcTcpAndSend(tcb, *th);
+        tcb->snd.nxt += segLen;
+        haveWritten += segLen;
+    }
+    
 }

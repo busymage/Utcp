@@ -3,6 +3,7 @@
 #include <Protocol/PassiveSock.hpp>
 #include <Protocol/Tcb.hpp>
 #include <Protocol/Tcp.hpp>
+#include <deque>
 
 class MockNetDev : public INetDevice
 {
@@ -52,20 +53,20 @@ public:
 
 TEST_F(PassiveSockTest, construct)
 {
-    PassiveSock ps(tcp);
+    auto ps = std::make_shared<PassiveSock>(tcp.get());
     ASSERT_FALSE(tcp->hasBoundPort(8888));
 }
 
 TEST_F(PassiveSockTest, bind)
 {
-    auto ps = std::make_shared<PassiveSock>(tcp);
+    auto ps = std::make_shared<PassiveSock>(tcp.get());
     ps->bind(8888);
     ASSERT_TRUE(tcp->hasBoundPort(8888));
 }
 
 TEST_F(PassiveSockTest, close)
 {
-    auto ps = std::make_shared<PassiveSock>(tcp);
+    auto ps = std::make_shared<PassiveSock>(tcp.get());
     ps->bind(8888);
     ps->close();
     ASSERT_FALSE(tcp->hasBoundPort(8888));
@@ -73,7 +74,7 @@ TEST_F(PassiveSockTest, close)
 
 TEST_F(PassiveSockTest, acceptReturnNullWhileBacklogIsEmpty)
 {
-    auto ps = std::make_shared<PassiveSock>(tcp);
+    auto ps = std::make_shared<PassiveSock>(tcp.get());
     ps->bind(8888);
     ASSERT_EQ(ps->accept(), nullptr);
     ps->close();

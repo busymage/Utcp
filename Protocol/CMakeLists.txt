@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.13.0)
 
 set(Sources src/ChecksumCalc.cpp
+            src/ConnectionSock.cpp
             src/PacketBuilder.cpp
             src/PassiveSock.cpp
             src/Segment.cpp
@@ -11,6 +12,7 @@ set(Sources src/ChecksumCalc.cpp
             )
 
 set(Headers include/Protocol/ChecksumCalc.hpp
+            include/Protocol/ConnectionSock.hpp
             include/Protocol/INetDevice.hpp
             include/Protocol/ISock.hpp
             include/Protocol/PacketBuilder.hpp
@@ -25,7 +27,7 @@ set(Headers include/Protocol/ChecksumCalc.hpp
 
 add_library(Protocol ${Sources} ${Headers})
 
-target_link_libraries(Utcp pthread)
+target_link_libraries(Protocol pthread)
 
 include_directories(include)
 

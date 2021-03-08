@@ -70,6 +70,7 @@ int TunNetDevice::send(const uint8_t *data, size_t len)
 		perror("write to netDevice:");
 		exit(1);
 	}
+	return nwrite;
 }
 
 int TunNetDevice::recv(uint8_t *data, size_t len)
