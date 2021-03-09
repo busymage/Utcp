@@ -197,7 +197,8 @@ struct Tcp::Impl
             return false;
         }
         if(seg.dataLen() > 0){
-            receiveData(tcb, seg);
+            auto conn = establishedConnection[tcb->addr];
+            receiveData(conn, seg);
         }
         if(seg.fin()){
             tcb->rcv.nxt = seg.seq() + 1;
@@ -331,11 +332,12 @@ struct Tcp::Impl
         return true;
     }
 
-    void receiveData(std::shared_ptr<Tcb> tcb, Segment &seg)
+    void receiveData(std::shared_ptr<ConnectionSock> sock, Segment &seg)
     {
+        auto tcb = sock->tcb();
         uint8_t *data = seg.data();
         uint16_t minSize = seg.dataLen() >= tcb->rcv.wnd ? tcb->rcv.wnd : seg.dataLen();
-        tcb->recvQueue.insert(tcb->recvQueue.end(), data, data + minSize);
+        sock->RecvFromTcp(data, minSize);  
         tcb->rcv.nxt += minSize;
         tcb->rcv.wnd -= minSize; 
     }

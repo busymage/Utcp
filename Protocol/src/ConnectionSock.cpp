@@ -99,3 +99,10 @@ std::shared_ptr<Tcb> ConnectionSock::tcb() const
 {
     return impl_->tcb;
 }
+
+void ConnectionSock::RecvFromTcp(const uint8_t *data , int len)
+{
+    std::lock_guard<std::mutex> lock(impl_->lock);
+    impl_->tcb->recvQueue.insert(impl_->tcb->recvQueue.end(), data, data + len);
+    impl_->recvCond.notify_all();
+}
