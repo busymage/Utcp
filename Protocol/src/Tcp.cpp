@@ -52,6 +52,7 @@ void printTcphdrInfo(uint32_t saddr, uint32_t daddr, tcphdr &th)
 
 void setDefaultValueForTcpHeader(std::shared_ptr<Tcb> tcb, tcphdr &th)
 {
+    memset(&th, 0, sizeof(tcphdr));
     th.source = tcb->addr.sport;
     th.dest = tcb->addr.dport;
     th.seq = htonl(tcb->snd.nxt);
@@ -157,7 +158,7 @@ struct Tcp::Impl
                     th.seq = tcb->snd.iss;
                     th.syn = 1;
                     th.ack = 1;
-                    calcTcpAndSend(tcb, th);
+                    calcTcpAndSend(tcb, th, sizeof(tcphdr));
                 }
             }
         }
@@ -172,7 +173,7 @@ struct Tcp::Impl
             setDefaultValueForTcpHeader(tcb, th);
             th.seq = htonl(seg.ackSeq());
             th.rst = 1;
-            calcTcpAndSend(tcb, th);
+            calcTcpAndSend(tcb, th, sizeof(tcphdr));
             auto it = establishedConnection.find(tcb->addr);
             establishedConnection.erase(it);
             return false;
@@ -326,7 +327,7 @@ struct Tcp::Impl
         }
         else if(seg.ackSeq() > tcb->snd.nxt){
             auto th = buildAckSegment(tcb, seg.seq());
-            sendPacket(tcb, th);
+            sendPacket(tcb, th, sizeof(tcphdr));
             return false;
         }
         return true;
@@ -345,7 +346,7 @@ struct Tcp::Impl
     void sendAcknowledgment(std::shared_ptr<Tcb> tcb)
     {
         auto th = buildAckSegment(tcb, tcb->rcv.nxt);
-        sendPacket(tcb, th);
+        sendPacket(tcb, th, sizeof(tcphdr));
     }
 
     void sendAckErrorReset(std::shared_ptr<Tcb> tcb, uint32_t ack)
@@ -354,7 +355,7 @@ struct Tcp::Impl
         setDefaultValueForTcpHeader(tcb, th);
         th.seq = htonl(ack);
         th.rst = 1;
-        calcTcpAndSend(tcb, th);
+        calcTcpAndSend(tcb, th, sizeof(tcphdr));
     }
 
     void deleteTcb(std::shared_ptr<Tcb> tcb){
@@ -362,16 +363,16 @@ struct Tcp::Impl
         establishedConnection.erase(it);
     }
 
-    void calcTcpAndSend(std::shared_ptr<Tcb> tcb, tcphdr &th){
-        th.check = caclTcpChecksum(&th, 20, tcb->addr.saddr, tcb->addr.daddr);
-        sendPacket(tcb,th);
+    void calcTcpAndSend(std::shared_ptr<Tcb> tcb, tcphdr &th, uint16_t segLen){
+        th.check = caclTcpChecksum(&th, segLen, tcb->addr.saddr, tcb->addr.daddr);
+        sendPacket(tcb,th, segLen);
     }
 
-    void sendPacket(std::shared_ptr<Tcb> tcb, tcphdr &th)
+    void sendPacket(std::shared_ptr<Tcb> tcb, tcphdr &th, uint16_t segLen)
     {
         printf("Send ");
         printTcphdrInfo(tcb->addr.saddr, tcb->addr.daddr, th);
-        PacketBuilder pktBuilder(tcb->addr.saddr, tcb->addr.daddr,&th, 20);
+        PacketBuilder pktBuilder(tcb->addr.saddr, tcb->addr.daddr,&th, segLen);
         auto outBuffer = pktBuilder.packet();
         netDev->send(outBuffer.data(), outBuffer.size());
     }
@@ -429,7 +430,7 @@ void Tcp::onPacket(std::shared_ptr<Tcb> tcb, std::vector<uint8_t> &buffer)
             return;
         }
         auto th = buildAckSegment(tcb, tcb->rcv.nxt);
-        impl_->sendPacket(tcb, th);
+        impl_->sendPacket(tcb, th, sizeof(tcphdr));
         return;
     }
 
@@ -723,9 +724,8 @@ void Tcp::send(std::shared_ptr<Tcb> tcb)
         th->ack = 1;
         memcpy(payload, tcb->sndQueue.data(),segLen);
         tcb->sndQueue.erase(tcb->sndQueue.begin(), tcb->sndQueue.begin() + segLen);
-        impl_->calcTcpAndSend(tcb, *th);
+        impl_->calcTcpAndSend(tcb, *th, sizeof(tcphdr) + segLen);
         tcb->snd.nxt += segLen;
         haveWritten += segLen;
     }
-    
 }

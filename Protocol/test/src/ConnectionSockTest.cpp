@@ -105,6 +105,8 @@ TEST_F(ConnectionSockTest, send)
     ASSERT_EQ(1000, ps->send(buffer));
     ASSERT_EQ(2, netDev->outData.size());
     std::vector<uint8_t> data = netDev->outData[0];
+    iphdr *ih = (iphdr*)data.data();
+    ASSERT_EQ(ih->tot_len, htons(40 + 536));
     tcphdr *hdr = (tcphdr *)(data.data() + sizeof(iphdr));
     ASSERT_EQ(hdr->seq, 0);
     data = netDev->outData[1];
@@ -149,4 +151,21 @@ TEST_F(ConnectionSockTest, recv)
     std::vector<uint8_t> buffer;
     ASSERT_EQ(ps->recv(buffer), 1024);
     ASSERT_EQ(tcb->rcv.wnd, 1024);
+}
+
+TEST_F(ConnectionSockTest, sendMultipleTime)
+{
+    auto tcb = std::make_shared<Tcb>(sockname);
+    tcb->snd.wnd = 50000;
+    auto ps = std::make_shared<ConnectionSock>(tcp, tcb);
+    tcp->addConnection(ps);
+    std::vector<uint8_t> buffer(1000, 'x');
+    ASSERT_EQ(1000, ps->send(buffer));
+    ASSERT_EQ(1000, ps->send(buffer));
+    
+    ASSERT_EQ(4, netDev->outData.size());
+    std::vector<uint8_t> data = netDev->outData[3];
+    tcphdr *hdr = (tcphdr *)(data.data() + sizeof(iphdr));
+    ASSERT_EQ(hdr->seq, htonl(1536));
+    ASSERT_EQ(tcb->snd.una, 0);
 }
