@@ -138,7 +138,7 @@ struct Tcp::Impl
         }
         if(seg.rst()){
             //notify user
-            deleteTcb(tcb);
+            deleteConn(tcb);
         }
         if(seg.syn()){
             if(seg.ack() || (!seg.rst() && !seg.ack())){
@@ -187,7 +187,8 @@ struct Tcp::Impl
         if(seg.fin()){
             tcb->rcv.nxt = seg.seq() + 1;
             sendAcknowledgment(tcb);
-            tcb->state = TcpState::CLOSE_WAIT;
+            auto sock = establishedConnection[tcb->addr];
+            sock->notifyPeerClose(TcpState::CLOSE_WAIT);
         }
         return true;
     }
@@ -203,7 +204,8 @@ struct Tcp::Impl
         }
         if(seg.fin()){
             tcb->rcv.nxt = seg.seq() + 1;
-            tcb->state = TcpState::CLOSE_WAIT;
+            auto sock = establishedConnection[tcb->addr];
+            sock->notifyPeerClose(TcpState::CLOSE_WAIT);
         }
         sendAcknowledgment(tcb);
         return true;
@@ -302,6 +304,8 @@ struct Tcp::Impl
         if(seg.fin()){
             tcb->rcv.nxt = seg.seq() + 1;
             sendAcknowledgment(tcb);
+            auto it = establishedConnection.find(tcb->addr);
+            establishedConnection.erase(it);
         }
         return true;
     }
@@ -358,7 +362,7 @@ struct Tcp::Impl
         calcTcpAndSend(tcb, th, sizeof(tcphdr));
     }
 
-    void deleteTcb(std::shared_ptr<Tcb> tcb){
+    void deleteConn(std::shared_ptr<Tcb> tcb){
         auto it = establishedConnection.find(tcb->addr);
         establishedConnection.erase(it);
     }
@@ -448,13 +452,13 @@ void Tcp::onPacket(std::shared_ptr<Tcb> tcb, std::vector<uint8_t> &buffer)
             case TcpState::FIN_WAIT2:
             case TcpState::CLOSE_WAIT:
             //Todo
-                impl_->deleteTcb(tcb);
+                impl_->deleteConn(tcb);
                 break;
             case TcpState::CLOSING:
             case TcpState::LAST_ACK:
             case TcpState::TIME_WAIT:
             //Todo
-                impl_->deleteTcb(tcb);
+                impl_->deleteConn(tcb);
                 break;
             default:
                 return;
@@ -728,4 +732,26 @@ void Tcp::send(std::shared_ptr<Tcb> tcb)
         tcb->snd.nxt += segLen;
         haveWritten += segLen;
     }
+}
+
+void Tcp::closeConnection(std::shared_ptr<ConnectionSock> sock)
+{
+    auto tcb = sock->tcb();
+    switch (tcb->state)
+    {
+    case TcpState::ESTABLISHED:
+        tcb->state = TcpState::FIN_WAIT1;
+        break;
+    case TcpState::CLOSE_WAIT:
+        tcb->state = TcpState::LAST_ACK;
+    default:
+        break;
+    }
+
+    tcphdr *th = new tcphdr;
+    setDefaultValueForTcpHeader(tcb, *th);
+    th->ack = 1;
+    th->fin = 1;
+    impl_->calcTcpAndSend(tcb, *th, sizeof(tcphdr));
+    tcb->snd.nxt += 1;
 }

@@ -44,6 +44,8 @@ public:
 
     void send(std::shared_ptr<Tcb> tcb); 
 
+    void closeConnection(std::shared_ptr<ConnectionSock> sock);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

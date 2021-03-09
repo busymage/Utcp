@@ -2,10 +2,9 @@
 #define UTCP_CONNECTIONSOCK_HPP
 
 #include <Protocol/ISock.hpp>
+#include <Protocol/Tcb.hpp>
 #include <Protocol/Tcp.hpp>
 #include <memory>
-
-struct Tcb;
 
 class ConnectionSock : public ISock,
                     public std::enable_shared_from_this<ConnectionSock>
@@ -32,6 +31,8 @@ public:
     std::shared_ptr<Tcb> tcb() const;
 
     void RecvFromTcp(const uint8_t *data , int len);
+
+    void notifyPeerClose(TcpState state);
 
 private:
     struct Impl;

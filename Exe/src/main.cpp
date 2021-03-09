@@ -18,6 +18,11 @@ int main()
 	{
 		std::vector<uint8_t> buffer;
 		int nrecv = sock->recv(buffer);
+		printf("recv %d bytes\n", nrecv);
+		if(nrecv == 0){
+			sock->close();
+			break;
+		}
 		sock->send(buffer);
 	}
 	

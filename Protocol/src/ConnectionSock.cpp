@@ -75,7 +75,7 @@ int ConnectionSock::recv(std::vector<uint8_t> &buffer)
     std::unique_lock<std::mutex> lock(impl_->lock);
     if(impl_->tcb->recvQueue.size() == 0){
         impl_->recvCond.wait(lock, [this](){
-            return impl_->IsReadable();
+            return impl_->IsReadable() || TcpState::CLOSE_WAIT == impl_->tcb->state;
         });
     }
     buffer = impl_->tcb->recvQueue;
@@ -86,7 +86,7 @@ int ConnectionSock::recv(std::vector<uint8_t> &buffer)
 
 int ConnectionSock::close()
 {
-    impl_->tcp->removeConnection(name());
+    impl_->tcp->closeConnection(shared_from_this());
     return 0;
 }
 
@@ -104,5 +104,12 @@ void ConnectionSock::RecvFromTcp(const uint8_t *data , int len)
 {
     std::lock_guard<std::mutex> lock(impl_->lock);
     impl_->tcb->recvQueue.insert(impl_->tcb->recvQueue.end(), data, data + len);
+    impl_->recvCond.notify_all();
+}
+
+void ConnectionSock::notifyPeerClose(TcpState state)
+{
+    std::lock_guard<std::mutex> lock(impl_->lock);
+    impl_->tcb->state = state;
     impl_->recvCond.notify_all();
 }

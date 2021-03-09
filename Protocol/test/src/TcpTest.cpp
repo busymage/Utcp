@@ -515,3 +515,31 @@ TEST_F(TcpTest, receiveContinuousDataInEstablishedState)
     ASSERT_EQ(hdr->ack, 1);
     ASSERT_EQ(hdr->ack_seq, htonl(0x4567 + 1024));
 }
+
+TEST_F(TcpTest, close)
+{
+    std::shared_ptr<Tcb> tcb = std::make_shared<Tcb>(serverSideAddr);
+    tcb->state = TcpState::LAST_ACK;
+    tcb->snd.nxt = 0x1234;
+    tcb->snd.una = 0x1234;
+    tcb->rcv.nxt = 0x4567;
+    tcb->rcv.wnd = 512;
+    auto connSock = std::make_shared<ConnectionSock> (tcp.get(), tcb);
+    ASSERT_TRUE(tcp->addConnection(connSock));
+
+    tcphdr th = {0};
+    th.source = sp.sport;
+    th.dest = sp.dport;
+    th.doff = 5;
+    th.seq = htonl(0x4567);
+    th.ack_seq = htonl(0x1234);
+    th.ack = 1;
+    th.window = 1234;
+    uint8_t *payload = constructSegmentCarrieData(&th, 1000);
+    th.check = caclTcpChecksum(&th, 1020, sp.saddr, sp.daddr);
+    PacketBuilder pb(sp.saddr, sp.daddr, &th, 1020);
+    std::vector<uint8_t> packet = pb.packet();
+    netDev->recv(packet.data(), packet.size());
+
+    ASSERT_EQ(tcp->getEstablishedConnection(tcb->addr), nullptr);
+}

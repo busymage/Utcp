@@ -89,10 +89,27 @@ TEST_F(ConnectionSockTest, construct)
 TEST_F(ConnectionSockTest, close)
 {
     auto tcb = std::make_shared<Tcb>(sockname);
+    tcb->state = TcpState::ESTABLISHED;
     auto ps = std::make_shared<ConnectionSock>(tcp, tcb);
     tcp->addConnection(ps);
     ps->close();
-    ASSERT_EQ(tcp->getEstablishedConnection(sockname), nullptr);
+    ASSERT_EQ(1, netDev->outData.size());
+    ASSERT_EQ(TcpState::FIN_WAIT1, tcb->state);
+    std::vector<uint8_t> data = netDev->outData[0];
+    tcphdr *hdr = (tcphdr *)(data.data() + sizeof(iphdr));
+    ASSERT_EQ(hdr->fin, 1);
+    ASSERT_EQ(hdr->ack, 1);
+}
+
+TEST_F(ConnectionSockTest, closeInCloseWait)
+{
+    auto tcb = std::make_shared<Tcb>(sockname);
+    tcb->state = TcpState::CLOSE_WAIT;
+    auto ps = std::make_shared<ConnectionSock>(tcp, tcb);
+    tcp->addConnection(ps);
+    ps->close();
+    ASSERT_EQ(1, netDev->outData.size());
+    ASSERT_EQ(TcpState::LAST_ACK, tcb->state);
 }
 
 TEST_F(ConnectionSockTest, send)
@@ -112,6 +129,23 @@ TEST_F(ConnectionSockTest, send)
     data = netDev->outData[1];
     hdr = (tcphdr *)(data.data() + sizeof(iphdr));
     ASSERT_EQ(hdr->seq, htonl(536));
+    ASSERT_EQ(tcb->snd.una, 0);
+}
+
+TEST_F(ConnectionSockTest, sendMultipleTime)
+{
+    auto tcb = std::make_shared<Tcb>(sockname);
+    tcb->snd.wnd = 50000;
+    auto ps = std::make_shared<ConnectionSock>(tcp, tcb);
+    tcp->addConnection(ps);
+    std::vector<uint8_t> buffer(1000, 'x');
+    ASSERT_EQ(1000, ps->send(buffer));
+    ASSERT_EQ(1000, ps->send(buffer));
+    
+    ASSERT_EQ(4, netDev->outData.size());
+    std::vector<uint8_t> data = netDev->outData[3];
+    tcphdr *hdr = (tcphdr *)(data.data() + sizeof(iphdr));
+    ASSERT_EQ(hdr->seq, htonl(1536));
     ASSERT_EQ(tcb->snd.una, 0);
 }
 
@@ -153,19 +187,18 @@ TEST_F(ConnectionSockTest, recv)
     ASSERT_EQ(tcb->rcv.wnd, 1024);
 }
 
-TEST_F(ConnectionSockTest, sendMultipleTime)
+TEST_F(ConnectionSockTest, recvWhenPeerClose)
 {
     auto tcb = std::make_shared<Tcb>(sockname);
-    tcb->snd.wnd = 50000;
+    tcb->snd.nxt = 0x1234;
+    tcb->snd.una = 0x1233;
+    tcb->rcv.wnd = 1024;
+    tcb->rcv.nxt = 0x4567;
+    tcb->snd.wnd = 1024;
+    tcb->state = TcpState::CLOSE_WAIT;
     auto ps = std::make_shared<ConnectionSock>(tcp, tcb);
     tcp->addConnection(ps);
-    std::vector<uint8_t> buffer(1000, 'x');
-    ASSERT_EQ(1000, ps->send(buffer));
-    ASSERT_EQ(1000, ps->send(buffer));
-    
-    ASSERT_EQ(4, netDev->outData.size());
-    std::vector<uint8_t> data = netDev->outData[3];
-    tcphdr *hdr = (tcphdr *)(data.data() + sizeof(iphdr));
-    ASSERT_EQ(hdr->seq, htonl(1536));
-    ASSERT_EQ(tcb->snd.una, 0);
+
+    std::vector<uint8_t> buffer;
+    ASSERT_EQ(ps->recv(buffer), 0);
 }
