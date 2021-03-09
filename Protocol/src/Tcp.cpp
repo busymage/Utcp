@@ -361,7 +361,7 @@ struct Tcp::Impl
     }
 
     void calcTcpAndSend(std::shared_ptr<Tcb> tcb, tcphdr &th){
-        th.check = caclTcpChecksum(&th, 20, tcb->addr.daddr, tcb->addr.saddr);
+        th.check = caclTcpChecksum(&th, 20, tcb->addr.saddr, tcb->addr.daddr);
         sendPacket(tcb,th);
     }
 
@@ -369,7 +369,7 @@ struct Tcp::Impl
     {
         printf("Send ");
         printTcphdrInfo(tcb->addr.saddr, tcb->addr.daddr, th);
-        PacketBuilder pktBuilder(tcb->addr.daddr, tcb->addr.saddr,&th, 20);
+        PacketBuilder pktBuilder(tcb->addr.saddr, tcb->addr.daddr,&th, 20);
         auto outBuffer = pktBuilder.packet();
         netDev->send(outBuffer.data(), outBuffer.size());
     }
