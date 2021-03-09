@@ -4,12 +4,18 @@
 #include <Protocol/Tcb.hpp>
 #include <arpa/inet.h>
 #include <queue>
+#include <condition_variable>
+#include <mutex>
 
 constexpr uint32_t LocalAddr = 0xa000002;
 
 struct PassiveSock::Impl{
     std::shared_ptr<Tcb> tcb;
     std::queue<std::shared_ptr<ISock>> backlog;
+
+    std::mutex lock;
+
+    std::condition_variable backlogCond;
 
     Tcp *tcp;
 };
@@ -32,6 +38,7 @@ PassiveSock::~PassiveSock(){
 
 int PassiveSock::bind(uint16_t port)
 {
+    impl_->tcb->state = TcpState::LISTEN;
     impl_->tcb->addr.sport = htons(port);
     return impl_->tcp->addListener(shared_from_this());
 }
@@ -42,6 +49,8 @@ int PassiveSock::connect(uint32_t addr, uint16_t port)
 
 ISock *PassiveSock::accept()
 {
+    //dont wait for now
+    std::lock_guard<std::mutex> lock(impl_->lock);
     if(impl_->backlog.empty())
     {
         return nullptr;
@@ -65,7 +74,25 @@ int PassiveSock::close()
     return 0;
 }
 
-uint16_t PassiveSock::port() const
+SocketPair PassiveSock::name() const
 {
-    return impl_->tcb->addr.sport;
+    return impl_->tcb->addr;
+}
+
+std::shared_ptr<Tcb> PassiveSock::tcb() const
+{
+    return impl_->tcb;
+}
+
+void PassiveSock::acceptSock(std::shared_ptr<ISock> sock)
+{
+    std::lock_guard<std::mutex> lock(impl_->lock);
+    impl_->backlog.push(sock);
+    impl_->backlogCond.notify_all();
+}
+
+int PassiveSock::waitingAcceptCount() const
+{
+    std::lock_guard<std::mutex> lock(impl_->lock);
+    return impl_->backlog.size();
 }

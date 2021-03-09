@@ -162,6 +162,11 @@ struct Tcp::Impl
             return false;
         }
         tcb->state = TcpState::ESTABLISHED;
+        //add sock to backlog
+        auto connection = establishedConnection[tcb->addr];
+        auto accpetor = listener[tcb->addr.sport];
+        accpetor->acceptSock(connection);
+
         if(seg.fin()){
             tcb->rcv.nxt = seg.seq() + 1;
             sendAcknowledgment(tcb);
@@ -543,10 +548,10 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
 
     // inital tcb
     SocketPair sp = {
-        inetHdr->saddr,
-        tcpHdr->source,
-        inetHdr->daddr,
-        tcpHdr->dest
+        inetHdr->daddr,     //local
+        tcpHdr->dest,
+        inetHdr->saddr,     //foregin
+        tcpHdr->source
     };
     std::shared_ptr<Tcb> tcb = std::make_shared<Tcb>(sp, tcpHdr);
 
@@ -593,10 +598,10 @@ void Tcp::stop()
 		
 bool Tcp::addListener(std::shared_ptr<PassiveSock> sock)
 {
-    if(impl_->listener.find(sock->port()) != impl_->listener.end()){
+    if(impl_->listener.find(sock->name().sport) != impl_->listener.end()){
         return false;
     }
-    impl_->listener[sock->port()] = sock;
+    impl_->listener[sock->name().sport] = sock;
     return true;
 }
 
@@ -653,7 +658,7 @@ void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
 
     if (isEstablished(pair))
     {
-        std::shared_ptr<Tcb> tcb = getEstablishedConnection(pair)->getTcb();
+        std::shared_ptr<Tcb> tcb = getEstablishedConnection(pair)->tcb();
         onPacket(tcb, buffer);
     }
     else if (hasBoundPort(ntohs(tcpHdr->dest)))

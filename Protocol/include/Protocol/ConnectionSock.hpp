@@ -29,7 +29,7 @@ public:
 
     SocketPair &name() const;
 
-    std::shared_ptr<Tcb> getTcb() const;
+    std::shared_ptr<Tcb> tcb() const;
 
 private:
     struct Impl;

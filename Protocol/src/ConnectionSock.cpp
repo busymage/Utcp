@@ -95,7 +95,7 @@ SocketPair &ConnectionSock::name() const
     return impl_->tcb->addr;
 }
 
-std::shared_ptr<Tcb> ConnectionSock::getTcb() const
+std::shared_ptr<Tcb> ConnectionSock::tcb() const
 {
     return impl_->tcb;
 }

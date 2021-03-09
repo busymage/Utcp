@@ -25,7 +25,13 @@ public:
 
     virtual int close() override;
 
-    uint16_t port() const;
+    SocketPair name() const;
+
+    std::shared_ptr<Tcb> tcb() const;
+
+    void acceptSock(std::shared_ptr<ISock> sock);
+
+    int waitingAcceptCount() const;
 
 private:
     struct Impl;
