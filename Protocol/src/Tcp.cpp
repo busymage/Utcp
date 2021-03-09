@@ -12,6 +12,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <string.h>
@@ -21,9 +22,24 @@ constexpr const uint16_t RecvWnd = 65535;
 
 constexpr const uint16_t MSS = 536;
 
-void printTcphdrInfo(tcphdr &th)
+std::string addrToString(uint32_t addr)
 {
-    printf("%u > %u ", ntohs(th.source), ntohs(th.dest));
+    std::string str;
+    uint8_t *start = (uint8_t*)&addr;
+    for (int i = 0; i < 4; i++)
+    {
+        str += std::to_string(start[i]);
+        if(i < 3){
+            str += '.';
+        }
+    }
+    return str;
+}
+
+void printTcphdrInfo(uint32_t saddr, uint32_t daddr, tcphdr &th)
+{
+    printf("%s:%u > %s:%u ", addrToString(saddr).c_str(), ntohs(th.source),
+                             addrToString(daddr).c_str(), ntohs(th.dest));
     printf("seq %u, ack %u win %u", ntohl(th.seq), ntohl(th.ack_seq), ntohs(th.window));
     printf("[%s%s%s%s%s%s]", th.urg ? "U" : "",
                                 th.ack ? "." : "",
@@ -36,8 +52,8 @@ void printTcphdrInfo(tcphdr &th)
 
 void setDefaultValueForTcpHeader(std::shared_ptr<Tcb> tcb, tcphdr &th)
 {
-    th.source = tcb->addr.dport;
-    th.dest = tcb->addr.sport;
+    th.source = tcb->addr.sport;
+    th.dest = tcb->addr.dport;
     th.seq = htonl(tcb->snd.nxt);
     th.ack_seq = htonl(tcb->rcv.nxt);
     th.doff = 5;
@@ -50,7 +66,7 @@ tcphdr buildAckSegment(std::shared_ptr<Tcb> tcb, uint32_t ack_seq)
     setDefaultValueForTcpHeader(tcb, resTcpHdr);
     resTcpHdr.ack_seq = htonl(ack_seq);
     resTcpHdr.ack = 1;
-    resTcpHdr.check = caclTcpChecksum(&resTcpHdr, 20, tcb->addr.daddr, tcb->addr.saddr);
+    resTcpHdr.check = caclTcpChecksum(&resTcpHdr, 20, tcb->addr.saddr, tcb->addr.daddr);
     return resTcpHdr;
 }
 
@@ -59,7 +75,7 @@ std::vector<uint8_t> buildRstPacket(std::shared_ptr<Tcb> tcb)
         tcphdr resTcpHdr = {0};
         setDefaultValueForTcpHeader(tcb, resTcpHdr);
         resTcpHdr.rst = 1;
-        resTcpHdr.check = caclTcpChecksum(&resTcpHdr, 20, tcb->addr.daddr, tcb->addr.saddr);
+        resTcpHdr.check = caclTcpChecksum(&resTcpHdr, 20, tcb->addr.saddr, tcb->addr.daddr);
         PacketBuilder pktBuilder(tcb->addr.daddr, tcb->addr.saddr,
                                     &resTcpHdr, 20);
         return pktBuilder.packet();
@@ -352,7 +368,7 @@ struct Tcp::Impl
     void sendPacket(std::shared_ptr<Tcb> tcb, tcphdr &th)
     {
         printf("Send ");
-        printTcphdrInfo(th);
+        printTcphdrInfo(tcb->addr.saddr, tcb->addr.daddr, th);
         PacketBuilder pktBuilder(tcb->addr.daddr, tcb->addr.saddr,&th, 20);
         auto outBuffer = pktBuilder.packet();
         netDev->send(outBuffer.data(), outBuffer.size());
@@ -533,10 +549,10 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
         th.seq = tcpHdr->ack_seq;
         th.rst = 1;
         th.window = 1234;
-        th.check = caclTcpChecksum(&th, 20, 0xa000001, 0xa000002);
-        PacketBuilder pb(0xa000001, 0xa000002, &th, 20);
+        th.check = caclTcpChecksum(&th, 20, inetHdr->daddr, inetHdr->saddr);
+        PacketBuilder pb(inetHdr->daddr, inetHdr->saddr, &th, 20);
         std::vector<uint8_t> packet = pb.packet();
-        printTcphdrInfo(th);
+        printTcphdrInfo(inetHdr->daddr, inetHdr->saddr, th);
         impl_->netDev->send(packet.data(), packet.size());
         return;
     }
@@ -561,12 +577,12 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
     resTcpHdr.seq = htonl(tcb->snd.iss);
     resTcpHdr.ack = 1;  
     resTcpHdr.syn = 1; 
-    resTcpHdr.check = caclTcpChecksum(&resTcpHdr, 20, inetHdr->daddr, inetHdr->saddr);
+    resTcpHdr.check = caclTcpChecksum(&resTcpHdr, 20, sp.saddr, sp.daddr);
 
-    PacketBuilder pktBuilder(inetHdr->daddr, inetHdr->saddr,
+    PacketBuilder pktBuilder(sp.saddr, sp.daddr,
                             &resTcpHdr, 20);
     std::vector<uint8_t> outBuffer = pktBuilder.packet();
-    printTcphdrInfo(resTcpHdr);
+    printTcphdrInfo(sp.saddr, sp.daddr, resTcpHdr);
     impl_->netDev->send(outBuffer.data(), outBuffer.size());
     
     //update tcb
@@ -648,7 +664,7 @@ void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
     }
     tcphdr *tcpHdr = (tcphdr *)(buffer.data() + inetHdr->ihl * 4);
     printf("Recv ");
-    printTcphdrInfo(*tcpHdr);
+    printTcphdrInfo(inetHdr->saddr, inetHdr->daddr, *tcpHdr);
 
     SocketPair pair = {
         inetHdr->daddr,     //local

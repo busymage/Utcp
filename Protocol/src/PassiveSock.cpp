@@ -49,11 +49,13 @@ int PassiveSock::connect(uint32_t addr, uint16_t port)
 
 ISock *PassiveSock::accept()
 {
-    //dont wait for now
-    std::lock_guard<std::mutex> lock(impl_->lock);
+    
+    std::unique_lock<std::mutex> lock(impl_->lock);
     if(impl_->backlog.empty())
     {
-        return nullptr;
+        impl_->backlogCond.wait(lock, [this](){
+            return impl_->backlog.empty() == false;
+        });
     }
     ISock *sock = impl_->backlog.front().get();
     impl_->backlog.pop();

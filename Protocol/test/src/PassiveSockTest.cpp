@@ -77,13 +77,14 @@ TEST_F(PassiveSockTest, close)
     ASSERT_FALSE(tcp->hasBoundPort(8888));
 }
 
+/*
 TEST_F(PassiveSockTest, acceptReturnNullWhileBacklogIsEmpty)
 {
     auto ps = std::make_shared<PassiveSock>(tcp.get());
     ps->bind(8888);
     ASSERT_EQ(ps->accept(), nullptr);
     ps->close();
-}
+}*/
 
 TEST_F(PassiveSockTest, acceptConnection)
 {
