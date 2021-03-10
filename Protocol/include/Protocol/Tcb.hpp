@@ -6,6 +6,8 @@
 #include <ostream>
 #include <Protocol/SocketPair.hpp>
 #include <stdint.h>
+#include <condition_variable>
+#include <mutex>
 
 struct SND{
     //send unacknowledged
@@ -64,6 +66,11 @@ struct Tcb{
     RCV rcv;
     std::vector<uint8_t> sndQueue;
     std::vector<uint8_t> recvQueue;
+
+    std::mutex lock;
+
+    std::condition_variable sndCond;
+    std::condition_variable rcvCond;
 
     Tcb(SocketPair &addr);
     Tcb(SocketPair &addr, tcphdr *th);

@@ -30,10 +30,6 @@ public:
 
     std::shared_ptr<Tcb> tcb() const;
 
-    void RecvFromTcp(const uint8_t *data , int len);
-
-    void notifyPeerClose(TcpState state);
-
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

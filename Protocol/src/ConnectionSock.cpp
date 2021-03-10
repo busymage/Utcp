@@ -3,21 +3,12 @@
 #include <Protocol/Tcp.hpp>
 #include <Protocol/Tcb.hpp>
 #include <arpa/inet.h>
-#include <condition_variable>
-#include <mutex>
 #include <queue>
 
 constexpr uint32_t LocalAddr = 0xa000002;
 
 struct ConnectionSock::Impl{
     std::shared_ptr<Tcb> tcb;
-
-    std::mutex lock;
-
-    std::condition_variable sendCond;
-
-    std::condition_variable recvCond;
-
     Tcp *tcp;
 
     bool IsWriteable()
@@ -56,9 +47,9 @@ ISock *ConnectionSock::accept()
 
 int ConnectionSock::send(const std::vector<uint8_t> &buffer)
 {
-    std::unique_lock<std::mutex> lock(impl_->lock);
+    std::unique_lock<std::mutex> lock(impl_->tcb->lock);
     if(impl_->tcb->snd.wnd == 0){
-        impl_->sendCond.wait(lock, [this](){
+        impl_->tcb->sndCond.wait(lock, [this](){
             return impl_->IsWriteable();
         });
     }
@@ -72,9 +63,9 @@ int ConnectionSock::send(const std::vector<uint8_t> &buffer)
 int ConnectionSock::recv(std::vector<uint8_t> &buffer)
 {
     //may add some flag to indicate whether or not the peer is close.
-    std::unique_lock<std::mutex> lock(impl_->lock);
+    std::unique_lock<std::mutex> lock(impl_->tcb->lock);
     if(impl_->tcb->recvQueue.size() == 0){
-        impl_->recvCond.wait(lock, [this](){
+        impl_->tcb->rcvCond.wait(lock, [this](){
             return impl_->IsReadable() || TcpState::CLOSE_WAIT == impl_->tcb->state;
         });
     }
@@ -98,18 +89,4 @@ SocketPair &ConnectionSock::name() const
 std::shared_ptr<Tcb> ConnectionSock::tcb() const
 {
     return impl_->tcb;
-}
-
-void ConnectionSock::RecvFromTcp(const uint8_t *data , int len)
-{
-    std::lock_guard<std::mutex> lock(impl_->lock);
-    impl_->tcb->recvQueue.insert(impl_->tcb->recvQueue.end(), data, data + len);
-    impl_->recvCond.notify_all();
-}
-
-void ConnectionSock::notifyPeerClose(TcpState state)
-{
-    std::lock_guard<std::mutex> lock(impl_->lock);
-    impl_->tcb->state = state;
-    impl_->recvCond.notify_all();
 }

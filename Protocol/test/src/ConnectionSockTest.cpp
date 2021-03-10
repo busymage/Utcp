@@ -195,10 +195,25 @@ TEST_F(ConnectionSockTest, recvWhenPeerClose)
     tcb->rcv.wnd = 1024;
     tcb->rcv.nxt = 0x4567;
     tcb->snd.wnd = 1024;
-    tcb->state = TcpState::CLOSE_WAIT;
+    tcb->state = TcpState::ESTABLISHED;
     auto ps = std::make_shared<ConnectionSock>(tcp, tcb);
     tcp->addConnection(ps);
 
+    tcphdr th = {0};
+    th.source = sockname.dport;
+    th.dest = sockname.sport;
+    th.doff = 5;
+    th.seq = htonl(0x4567);
+    th.ack_seq = htonl(0x1234);
+    th.ack = 1;
+    th.fin = 1;
+    th.window = 1234;
+    th.check = caclTcpChecksum(&th, 20, sockname.daddr, sockname.saddr);
+    PacketBuilder pb(sockname.daddr, sockname.saddr, &th, 20);
+    std::vector<uint8_t> packet = pb.packet();
+    netDev->recv(packet.data(), packet.size());
+
+    ASSERT_EQ(tcb->state, TcpState::CLOSE_WAIT);
     std::vector<uint8_t> buffer;
     ASSERT_EQ(ps->recv(buffer), 0);
 }

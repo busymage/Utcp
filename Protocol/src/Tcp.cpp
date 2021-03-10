@@ -187,8 +187,6 @@ struct Tcp::Impl
         if(seg.fin()){
             tcb->rcv.nxt = seg.seq() + 1;
             sendAcknowledgment(tcb);
-            auto sock = establishedConnection[tcb->addr];
-            sock->notifyPeerClose(TcpState::CLOSE_WAIT);
         }
         return true;
     }
@@ -204,8 +202,7 @@ struct Tcp::Impl
         }
         if(seg.fin()){
             tcb->rcv.nxt = seg.seq() + 1;
-            auto sock = establishedConnection[tcb->addr];
-            sock->notifyPeerClose(TcpState::CLOSE_WAIT);
+            tcb->state = TcpState::CLOSE_WAIT;
         }
         sendAcknowledgment(tcb);
         return true;
@@ -342,7 +339,7 @@ struct Tcp::Impl
         auto tcb = sock->tcb();
         uint8_t *data = seg.data();
         uint16_t minSize = seg.dataLen() >= tcb->rcv.wnd ? tcb->rcv.wnd : seg.dataLen();
-        sock->RecvFromTcp(data, minSize);  
+        tcb->recvQueue.insert(tcb->recvQueue.end(), data, data + minSize); 
         tcb->rcv.nxt += minSize;
         tcb->rcv.wnd -= minSize; 
     }
@@ -391,10 +388,6 @@ Tcp::Tcp(std::shared_ptr<INetDevice> netDev)
 Tcp::~Tcp()
 {
     stop();
-    if(impl_->workerThread.joinable()){
-        impl_->workerThread.join();
-    }
-
     //remove all all sock tcp holds.
     impl_->listener.clear();
     impl_->establishedConnection.clear();
@@ -616,6 +609,9 @@ void Tcp::stop()
     if(impl_->start){
         impl_->stop.set_value(true);
         impl_->start = false;
+        if(impl_->workerThread.joinable()){
+            impl_->workerThread.join();
+        }
     }
 }
 		
@@ -682,7 +678,15 @@ void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
     if (isEstablished(pair))
     {
         std::shared_ptr<Tcb> tcb = getEstablishedConnection(pair)->tcb();
+        //lock tcb
+        std::lock_guard<std::mutex> lock(tcb->lock);
         onPacket(tcb, buffer);
+        if(tcb->recvQueue.size() > 0 || tcb->state == TcpState::CLOSE_WAIT){
+            tcb->rcvCond.notify_one();
+        }
+        if(tcb->snd.wnd > 0){
+            tcb->sndCond.notify_one();
+        }
     }
     else if (hasBoundPort(ntohs(tcpHdr->dest)))
     {
@@ -737,6 +741,7 @@ void Tcp::send(std::shared_ptr<Tcb> tcb)
 void Tcp::closeConnection(std::shared_ptr<ConnectionSock> sock)
 {
     auto tcb = sock->tcb();
+    std::lock_guard<std::mutex> lock(tcb->lock);
     switch (tcb->state)
     {
     case TcpState::ESTABLISHED:
