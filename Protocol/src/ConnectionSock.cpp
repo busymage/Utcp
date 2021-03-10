@@ -35,6 +35,7 @@ int ConnectionSock::bind(uint16_t port)
 {
     return 0;
 }
+
 int ConnectionSock::connect(uint32_t addr, uint16_t port)
 {
     return 0;
@@ -42,12 +43,27 @@ int ConnectionSock::connect(uint32_t addr, uint16_t port)
 
 ISock *ConnectionSock::accept()
 {
-    return 0;
+    return nullptr;
 }
 
 int ConnectionSock::send(const std::vector<uint8_t> &buffer)
 {
     std::unique_lock<std::mutex> lock(impl_->tcb->lock);
+
+    //the connection is reset by peer.
+    if(impl_->tcb->state == TcpState::CLOSE){
+        return -2;
+    }
+
+    //error:  connection closing
+    if(impl_->tcb->state == TcpState::FIN_WAIT1 ||
+    impl_->tcb->state == TcpState::FIN_WAIT2 ||
+    impl_->tcb->state == TcpState::CLOSING ||
+    impl_->tcb->state == TcpState::LAST_ACK ||
+    impl_->tcb->state == TcpState::TIME_WAIT){
+        return -3;
+    }
+
     if(impl_->tcb->snd.wnd == 0){
         impl_->tcb->sndCond.wait(lock, [this](){
             return impl_->IsWriteable();
@@ -64,6 +80,26 @@ int ConnectionSock::recv(std::vector<uint8_t> &buffer)
 {
     //may add some flag to indicate whether or not the peer is close.
     std::unique_lock<std::mutex> lock(impl_->tcb->lock);
+    
+    //the connection is reset by peer.
+    if(impl_->tcb->state == TcpState::CLOSE){
+        return -2;
+    }
+    
+    //peer clsoe send. only get data from recvQueue.
+    if(impl_->tcb->state == TcpState::CLOSE_WAIT){
+        buffer = impl_->tcb->recvQueue;
+        impl_->tcb->recvQueue.clear();
+        impl_->tcb->rcv.wnd += buffer.size();
+        return buffer.size();
+    }
+    //error:  connection closing
+    if(impl_->tcb->state == TcpState::CLOSING ||
+        impl_->tcb->state == TcpState::LAST_ACK ||
+        impl_->tcb->state == TcpState::TIME_WAIT){
+        return -3;
+    }
+    
     if(impl_->tcb->recvQueue.size() == 0){
         impl_->tcb->rcvCond.wait(lock, [this](){
             return impl_->IsReadable() || TcpState::CLOSE_WAIT == impl_->tcb->state;

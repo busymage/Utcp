@@ -47,6 +47,7 @@ struct RCV{
 };
 
 enum TcpState{
+    CLOSE,
     LISTEN,
     SYN_SENT,
     SYN_RECEIVED,

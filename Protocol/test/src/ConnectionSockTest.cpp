@@ -115,6 +115,7 @@ TEST_F(ConnectionSockTest, closeInCloseWait)
 TEST_F(ConnectionSockTest, send)
 {
     auto tcb = std::make_shared<Tcb>(sockname);
+    tcb->state = TcpState::ESTABLISHED;
     tcb->snd.wnd = 1024;
     auto ps = std::make_shared<ConnectionSock>(tcp, tcb);
     tcp->addConnection(ps);
@@ -135,6 +136,7 @@ TEST_F(ConnectionSockTest, send)
 TEST_F(ConnectionSockTest, sendMultipleTime)
 {
     auto tcb = std::make_shared<Tcb>(sockname);
+    tcb->state = TcpState::ESTABLISHED;
     tcb->snd.wnd = 50000;
     auto ps = std::make_shared<ConnectionSock>(tcp, tcb);
     tcp->addConnection(ps);

@@ -137,8 +137,8 @@ struct Tcp::Impl
             return;
         }
         if(seg.rst()){
-            //notify user
-            deleteConn(tcb);
+            resetConn(tcb);
+            return;
         }
         if(seg.syn()){
             if(seg.ack() || (!seg.rst() && !seg.ack())){
@@ -377,6 +377,14 @@ struct Tcp::Impl
         auto outBuffer = pktBuilder.packet();
         netDev->send(outBuffer.data(), outBuffer.size());
     }
+
+    void resetConn(std::shared_ptr<Tcb> tcb)
+    {
+        tcb->state = TcpState::CLOSE;
+        tcb->sndQueue.clear();
+        tcb->recvQueue.clear();
+        deleteConn(tcb);
+    }
 };
 
 Tcp::Tcp(std::shared_ptr<INetDevice> netDev)
@@ -436,22 +444,21 @@ void Tcp::onPacket(std::shared_ptr<Tcb> tcb, std::vector<uint8_t> &buffer)
         switch (tcb->state){
             case TcpState::SYN_RECEIVED:
             {
-            auto it = impl_->establishedConnection.find(tcb->addr);
-            impl_->establishedConnection.erase(it);
+                //in this state. Only Tcp hold the connection
+                //User dont know it exist.
+                impl_->deleteConn(tcb);
             return;
             }
             case TcpState::ESTABLISHED:
             case TcpState::FIN_WAIT1:
             case TcpState::FIN_WAIT2:
             case TcpState::CLOSE_WAIT:
-            //Todo
-                impl_->deleteConn(tcb);
+                impl_->resetConn(tcb);
                 break;
             case TcpState::CLOSING:
             case TcpState::LAST_ACK:
             case TcpState::TIME_WAIT:
-            //Todo
-                impl_->deleteConn(tcb);
+                impl_->resetConn(tcb);
                 break;
             default:
                 return;
@@ -463,8 +470,7 @@ void Tcp::onPacket(std::shared_ptr<Tcb> tcb, std::vector<uint8_t> &buffer)
         if(tcb->isSynchronizedState()){
             auto outBuffer = buildRstPacket(tcb);
             impl_->netDev->send(outBuffer.data(), outBuffer.size());
-            auto it = impl_->establishedConnection.find(tcb->addr);
-            impl_->establishedConnection.erase(it);
+            impl_->resetConn(tcb);
         }
         return;
     }
@@ -681,10 +687,13 @@ void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
         //lock tcb
         std::lock_guard<std::mutex> lock(tcb->lock);
         onPacket(tcb, buffer);
-        if(tcb->recvQueue.size() > 0 || tcb->state == TcpState::CLOSE_WAIT){
+        if(tcb->recvQueue.size() > 0 ||
+            tcb->state == TcpState::CLOSE_WAIT ||
+            tcb->state == TcpState::CLOSE ){
             tcb->rcvCond.notify_one();
         }
-        if(tcb->snd.wnd > 0){
+        if(tcb->snd.wnd > 0 ||
+            tcb->state == TcpState::CLOSE){
             tcb->sndCond.notify_one();
         }
     }
