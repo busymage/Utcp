@@ -72,6 +72,7 @@ struct Tcb{
 
     std::condition_variable sndCond;
     std::condition_variable rcvCond;
+    std::condition_variable estCond;
 
     Tcb(SocketPair &addr);
     Tcb(SocketPair &addr, tcphdr *th);

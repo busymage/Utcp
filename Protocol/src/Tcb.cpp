@@ -9,6 +9,7 @@ Tcb::Tcb(SocketPair &sockPair)
     addr = sockPair;
     snd = {0};
     rcv = {0};
+    rcv.wnd = WND;
 }
 
 Tcb::Tcb(SocketPair &sockPair, tcphdr *th)

@@ -1,7 +1,7 @@
 #!/bin/bash
 
-sudo setcap 'CAP_NET_ADMIN+eip' build/Exe/Utcp
-./build/Exe/Utcp &
+sudo setcap 'CAP_NET_ADMIN+eip' build/Exe/$1
+./build/Exe/$1 &
 pid=$!
 sudo ip addr add 10.0.0.1/24 dev tun0
 sudo ip link set up dev tun0

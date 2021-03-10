@@ -11,6 +11,7 @@
 #include <future>
 #include <iostream>
 #include <map>
+#include <math.h>
 #include <memory>
 #include <netinet/in.h>
 #include <netinet/ip.h>
@@ -109,6 +110,23 @@ struct Tcp::Impl
     //stop signal
     std::promise<bool> stop;
 
+    uint8_t portBitmap[UINT16_MAX / 8] = {0};
+
+    bool setPortifNotSet(uint16_t port)
+    {
+        if(port == 0){
+            return portBitmap[0] & 1;
+        }
+        uint16_t index = UINT16_MAX / 8;
+        uint8_t distance = UINT16_MAX % 8;
+        int num = (int)pow(2, distance);
+        if((portBitmap[index] & num) != num){
+            portBitmap[index] | num;
+            return true;
+        }
+        return false;
+    }
+
     bool checkSequenceNumber(std::shared_ptr<Tcb> tcb, Segment &seg)
     {
         if(tcb->rcv.wnd == 0){
@@ -146,6 +164,9 @@ struct Tcp::Impl
                 tcb->rcv.irs = seg.seq();
                 if(seg.ack()){
                     tcb->snd.una = seg.ackSeq();
+                    tcb->snd.wnd = seg.wnd();
+                    tcb->snd.wl1 = seg.seq();
+                    tcb->snd.wl2 = seg.ackSeq();
                     //clear retransmission queue
                 }
                 if(tcb->snd.una > tcb->snd.iss){
@@ -381,6 +402,8 @@ struct Tcp::Impl
     void resetConn(std::shared_ptr<Tcb> tcb)
     {
         tcb->state = TcpState::CLOSE;
+        tcb->snd = {0};
+        tcb->rcv = {0};
         tcb->sndQueue.clear();
         tcb->recvQueue.clear();
         deleteConn(tcb);
@@ -686,6 +709,7 @@ void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
         std::shared_ptr<Tcb> tcb = getEstablishedConnection(pair)->tcb();
         //lock tcb
         std::lock_guard<std::mutex> lock(tcb->lock);
+        printf("acquire lock\n");
         onPacket(tcb, buffer);
         if(tcb->recvQueue.size() > 0 ||
             tcb->state == TcpState::CLOSE_WAIT ||
@@ -695,6 +719,9 @@ void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
         if(tcb->snd.wnd > 0 ||
             tcb->state == TcpState::CLOSE){
             tcb->sndCond.notify_one();
+        }
+        if(tcb->state == TcpState::ESTABLISHED){
+            tcb->estCond.notify_one();
         }
     }
     else if (hasBoundPort(ntohs(tcpHdr->dest)))
@@ -768,4 +795,30 @@ void Tcp::closeConnection(std::shared_ptr<ConnectionSock> sock)
     th->fin = 1;
     impl_->calcTcpAndSend(tcb, *th, sizeof(tcphdr));
     tcb->snd.nxt += 1;
+}
+
+void Tcp::connect(std::shared_ptr<ConnectionSock> sock)
+{
+    auto tcb = sock->tcb();
+    tcb->state = TcpState::SYN_SENT;
+    addConnection(sock);
+    //send syn packet
+    tcphdr *th = new tcphdr;
+    setDefaultValueForTcpHeader(tcb, *th);
+    th->syn = 1;
+    impl_->calcTcpAndSend(tcb, *th, sizeof(tcphdr));
+    tcb->snd.nxt += 1;
+}
+
+uint16_t Tcp::pickARamdonPort()
+{
+    uint32_t seed = 123456;
+    srand(seed);
+    uint16_t port;
+    while(1){
+        port = rand() / 65535;
+        if(impl_->setPortifNotSet(port))
+            break;
+    }
+    return port;
 }

@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.0.0)
 
-set(Sources src/main.cpp)
-
-add_executable(Utcp ${Sources})
+add_executable(Server src/server.cpp)
+add_executable(Client src/client.cpp)
 
 include_directories(../Protocol/include)
 
-target_link_libraries(Utcp Protocol)
+target_link_libraries(Server Protocol)
+target_link_libraries(Client Protocol)

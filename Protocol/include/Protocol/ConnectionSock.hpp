@@ -10,6 +10,7 @@ class ConnectionSock : public ISock,
                     public std::enable_shared_from_this<ConnectionSock>
 {
 public:
+    ConnectionSock(Tcp *tcp);
     ConnectionSock(Tcp *tcp, std::shared_ptr<Tcb>);
 
     ~ConnectionSock();

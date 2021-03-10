@@ -22,6 +22,19 @@ struct ConnectionSock::Impl{
     }
 };
 
+ConnectionSock::ConnectionSock(Tcp *tcp)
+:impl_(new Impl)
+{
+    SocketPair addr = {
+        htonl(LocalAddr),
+        0,
+        0,
+        0
+    };
+    impl_->tcp = tcp;
+    impl_->tcb = std::make_shared<Tcb>(addr);
+}
+
 ConnectionSock::ConnectionSock(Tcp *tcp, std::shared_ptr<Tcb> tcb)
 :impl_(new Impl)
 {
@@ -38,6 +51,26 @@ int ConnectionSock::bind(uint16_t port)
 
 int ConnectionSock::connect(uint32_t addr, uint16_t port)
 {
+    std::unique_lock<std::mutex> lock(impl_->tcb->lock);
+    //connection already exists
+    if(TcpState::CLOSE != impl_->tcb->state){
+        return -2;
+    }
+    if(impl_->tcb->addr.saddr == 0){
+        impl_->tcb->addr.saddr = htonl(LocalAddr);
+    }
+    if(impl_->tcb->addr.sport == 0){
+        //pick a number without used.
+        impl_->tcb->addr.sport = htons(impl_->tcp->pickARamdonPort());
+    }
+    impl_->tcb->addr.daddr = htonl(addr);
+    impl_->tcb->addr.dport = htons(port);
+
+    impl_->tcp->connect(shared_from_this());
+    
+    impl_->tcb->estCond.wait(lock, [this](){
+            return impl_->tcb->state == TcpState::ESTABLISHED;
+    });
     return 0;
 }
 

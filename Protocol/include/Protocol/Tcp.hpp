@@ -46,6 +46,10 @@ public:
 
     void closeConnection(std::shared_ptr<ConnectionSock> sock);
 
+    void connect(std::shared_ptr<ConnectionSock> sock);
+
+    uint16_t pickARamdonPort();
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
