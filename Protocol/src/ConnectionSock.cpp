@@ -41,9 +41,9 @@ int ConnectionSock::connect(uint32_t addr, uint16_t port)
     return 0;
 }
 
-ISock *ConnectionSock::accept()
+std::shared_ptr<ISock> ConnectionSock::accept()
 {
-    return nullptr;
+    return {};
 }
 
 int ConnectionSock::send(const std::vector<uint8_t> &buffer)

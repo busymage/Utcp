@@ -13,7 +13,7 @@ int main()
 	
 	auto ps = std::make_shared<PassiveSock>(&tcp);
 	ps->bind(8888);
-	ISock *sock = ps->accept();
+	auto sock = ps->accept();
 	while (1)
 	{
 		std::vector<uint8_t> buffer;

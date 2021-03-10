@@ -18,7 +18,7 @@ public:
 
     virtual int connect(uint32_t addr, uint16_t port) override;
 
-    virtual ISock *accept() override;
+    virtual std::shared_ptr<ISock> accept() override;
 
     virtual int send(const std::vector<uint8_t> &buffer) override;
 

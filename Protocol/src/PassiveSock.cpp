@@ -47,7 +47,7 @@ int PassiveSock::connect(uint32_t addr, uint16_t port)
     return 0;
 }
 
-ISock *PassiveSock::accept()
+std::shared_ptr<ISock> PassiveSock::accept()
 {
     
     std::unique_lock<std::mutex> lock(impl_->lock);
@@ -57,7 +57,7 @@ ISock *PassiveSock::accept()
             return impl_->backlog.empty() == false;
         });
     }
-    ISock *sock = impl_->backlog.front().get();
+    auto sock = impl_->backlog.front();
     impl_->backlog.pop();
     return sock;
 }
