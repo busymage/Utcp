@@ -38,8 +38,12 @@ std::string addrToString(uint32_t addr)
     return str;
 }
 
-void printTcphdrInfo(uint32_t saddr, uint32_t daddr, tcphdr &th)
+void printTcphdrInfo(const std::string &prefix, uint32_t saddr, uint32_t daddr, tcphdr &th)
 {
+    HrTimePoint now = std::chrono::system_clock::now();
+    time_t tt = std::chrono::high_resolution_clock::to_time_t(now);
+    printf("[%s] ", ctime(&tt));
+    printf("%s ", prefix.c_str());
     printf("%s:%u > %s:%u ", addrToString(saddr).c_str(), ntohs(th.source),
                              addrToString(daddr).c_str(), ntohs(th.dest));
     printf("seq %u, ack %u win %u", ntohl(th.seq), ntohl(th.ack_seq), ntohs(th.window));
@@ -106,6 +110,8 @@ struct Tcp::Impl
 
     bool start = false;
 
+    std::mutex lock;
+
     std::thread workerThread;
 
     //stop signal
@@ -113,7 +119,62 @@ struct Tcp::Impl
 
     uint8_t portBitmap[UINT16_MAX / 8] = {0};
 
-    std::map<std::shared_ptr<ConnectionSock>, Timer>  RetransmissionTimers;
+    std::map<std::shared_ptr<Tcb>, Timer*>  RetransmissionTimers;
+
+    void removeTimer(std::shared_ptr<Tcb> tcb)
+    {
+        std::lock_guard<std::mutex> guard(lock);
+        auto it = RetransmissionTimers.find(tcb);
+        if(it != RetransmissionTimers.end()){
+            RetransmissionTimers.erase(it);
+        }
+    }
+
+    bool AddTimer(std::shared_ptr<Tcb> tcb)
+    {
+        std::lock_guard<std::mutex> guard(lock);
+        auto it = RetransmissionTimers.find(tcb);
+        if(it != RetransmissionTimers.end()){
+            return false;
+        }
+        RetransmissionTimers[tcb] = &tcb->retransmissionTimer;
+        return true;
+    }
+
+
+    void processTimer()
+    {
+        std::vector<std::shared_ptr<Tcb>> shouldDelTimer;
+        HrTimePoint now = std::chrono::high_resolution_clock::now();
+        std::lock_guard<std::mutex> guard(lock);
+        for(auto it = RetransmissionTimers.begin(); it != RetransmissionTimers.end(); it++){
+            auto tcb = it->first;
+            auto timer = it->second; 
+            if(timer->expired <= now){
+                timer->handler();
+                //reset timer
+                uint32_t rto = tcb->rto * 2;
+                if(rto > MAX_RTO){
+                   shouldDelTimer.push_back(tcb);
+                   continue;
+                }
+                tcb->rto = rto;
+                timer->expired = now + std::chrono::milliseconds(tcb->rto);
+            }   
+        }
+
+        for(auto tcb : shouldDelTimer){
+            auto it = RetransmissionTimers.find(tcb);
+            RetransmissionTimers.erase(it);
+            {
+                std::lock_guard<std::mutex> tcbLock(tcb->lock);
+                tcb->state = TcpState::ABORT;
+                tcb->estCond.notify_one();
+            }
+            auto conn = establishedConnection.find(tcb->addr);
+            establishedConnection.erase(conn);
+        }    
+    }
 
     void transmitSyn(std::shared_ptr<Tcb> tcb)
     {
@@ -180,6 +241,7 @@ struct Tcp::Impl
                     tcb->snd.wl1 = seg.seq();
                     tcb->snd.wl2 = seg.ackSeq();
                     //clear retransmission queue
+                    removeTimer(tcb);
                 }
                 if(tcb->snd.una > tcb->snd.iss){
                     tcb->state = TcpState::ESTABLISHED;
@@ -404,8 +466,7 @@ struct Tcp::Impl
 
     void sendPacket(std::shared_ptr<Tcb> tcb, tcphdr &th, uint16_t segLen)
     {
-        printf("Send ");
-        printTcphdrInfo(tcb->addr.saddr, tcb->addr.daddr, th);
+        printTcphdrInfo("Send", tcb->addr.saddr, tcb->addr.daddr, th);
         PacketBuilder pktBuilder(tcb->addr.saddr, tcb->addr.daddr,&th, segLen);
         auto outBuffer = pktBuilder.packet();
         netDev->send(outBuffer.data(), outBuffer.size());
@@ -593,7 +654,7 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
         th.check = caclTcpChecksum(&th, 20, inetHdr->daddr, inetHdr->saddr);
         PacketBuilder pb(inetHdr->daddr, inetHdr->saddr, &th, 20);
         std::vector<uint8_t> packet = pb.packet();
-        printTcphdrInfo(inetHdr->daddr, inetHdr->saddr, th);
+        printTcphdrInfo("Send", inetHdr->daddr, inetHdr->saddr, th);
         impl_->netDev->send(packet.data(), packet.size());
         return;
     }
@@ -623,7 +684,7 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
     PacketBuilder pktBuilder(sp.saddr, sp.daddr,
                             &resTcpHdr, 20);
     std::vector<uint8_t> outBuffer = pktBuilder.packet();
-    printTcphdrInfo(sp.saddr, sp.daddr, resTcpHdr);
+    printTcphdrInfo("Send", sp.saddr, sp.daddr, resTcpHdr);
     impl_->netDev->send(outBuffer.data(), outBuffer.size());
     
     //update tcb
@@ -658,6 +719,7 @@ void Tcp::stop()
 		
 bool Tcp::addListener(std::shared_ptr<PassiveSock> sock)
 {
+    std::lock_guard<std::mutex> lock(impl_->lock);
     if(!impl_->setPortifNotSet(sock->name().sport)){
         return false;
     }
@@ -670,6 +732,7 @@ bool Tcp::addListener(std::shared_ptr<PassiveSock> sock)
 
 void Tcp::removeListener(uint16_t port)
 {
+    std::lock_guard<std::mutex> lock(impl_->lock);
     auto it = impl_->listener.find(port);
     if(it != impl_->listener.end()){
         impl_->listener.erase(it);
@@ -678,6 +741,7 @@ void Tcp::removeListener(uint16_t port)
 
 bool Tcp::addConnection(std::shared_ptr<ConnectionSock> sock)
 {
+    std::lock_guard<std::mutex> lock(impl_->lock);
     if(impl_->establishedConnection.find(sock->name()) != impl_->establishedConnection.end()){
         return false;
     }
@@ -687,6 +751,7 @@ bool Tcp::addConnection(std::shared_ptr<ConnectionSock> sock)
 
 void Tcp::removeConnection(SocketPair &sockname)
 {
+    std::lock_guard<std::mutex> lock(impl_->lock);
     auto it = impl_->establishedConnection.find(sockname);
     if(it != impl_->establishedConnection.end()){
         impl_->establishedConnection.erase(it);
@@ -710,8 +775,7 @@ void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
         return;
     }
     tcphdr *tcpHdr = (tcphdr *)(buffer.data() + inetHdr->ihl * 4);
-    printf("Recv ");
-    printTcphdrInfo(inetHdr->saddr, inetHdr->daddr, *tcpHdr);
+    printTcphdrInfo("Recv", inetHdr->saddr, inetHdr->daddr, *tcpHdr);
 
     SocketPair pair = {
         inetHdr->daddr,     //local
@@ -735,7 +799,8 @@ void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
             tcb->sndCond.notify_one();
         }
         if(tcb->state == TcpState::ESTABLISHED ||
-            tcb->state == TcpState::CLOSE){
+            tcb->state == TcpState::CLOSE ||
+            tcb->state == TcpState::ABORT){
             tcb->estCond.notify_one();
         }
     }
@@ -753,6 +818,7 @@ void Tcp::worker(std::future<bool> stop)
     printf("Tcp start running.\n");
     while (stop.wait_for(std::chrono::milliseconds(1)) != std::future_status::ready)
 	{
+        impl_->processTimer();
 		std::vector<uint8_t> buffer(1500);
 		int nread = impl_->netDev->recv(buffer.data(), buffer.size());
 		if (nread < 0)
@@ -819,6 +885,14 @@ void Tcp::connect(std::shared_ptr<ConnectionSock> sock)
     //send syn packet
     impl_->transmitSyn(tcb);
     tcb->snd.nxt += 1;
+    
+    //start retmix time, rto not impl now.
+    tcb->rto = MIN_RTO;
+    tcb->retransmissionTimer.expired = std::chrono::system_clock::now() + std::chrono::milliseconds(tcb->rto); 
+    tcb->retransmissionTimer.handler = [this, tcb](){
+        this->impl_->transmitSyn(tcb);
+    };
+    impl_->AddTimer(tcb);
 }
 
 uint16_t Tcp::pickARamdonPort()

@@ -7,6 +7,10 @@
 
 constexpr uint32_t LocalAddr = 0xa000002;
 
+constexpr int CONNECTION_RESET = -2;
+constexpr int CONNECTION_CLOSE = -3;
+constexpr int CONNECTION_TIMEOUT = -4;
+
 struct ConnectionSock::Impl{
     std::shared_ptr<Tcb> tcb;
     Tcp *tcp;
@@ -54,7 +58,7 @@ int ConnectionSock::connect(uint32_t addr, uint16_t port)
     std::unique_lock<std::mutex> lock(impl_->tcb->lock);
     //connection already exists
     if(TcpState::CLOSE != impl_->tcb->state){
-        return -2;
+        return CONNECTION_RESET;
     }
     if(impl_->tcb->addr.saddr == 0){
         impl_->tcb->addr.saddr = htonl(LocalAddr);
@@ -70,10 +74,14 @@ int ConnectionSock::connect(uint32_t addr, uint16_t port)
     
     impl_->tcb->estCond.wait(lock, [this](){
             return impl_->tcb->state == TcpState::ESTABLISHED ||
-                impl_->tcb->state == TcpState::CLOSE;
+                impl_->tcb->state == TcpState::CLOSE ||
+                impl_->tcb->state == TcpState::ABORT;
     });
     if(impl_->tcb->state == TcpState::CLOSE){
-        return -2;
+        return CONNECTION_RESET;
+    }
+    if(impl_->tcb->state == TcpState::ABORT){
+        return CONNECTION_TIMEOUT;
     }
     return 0;
 }
@@ -89,7 +97,7 @@ int ConnectionSock::send(const std::vector<uint8_t> &buffer)
 
     //the connection is reset by peer.
     if(impl_->tcb->state == TcpState::CLOSE){
-        return -2;
+        return CONNECTION_RESET;
     }
 
     //error:  connection closing
@@ -98,7 +106,7 @@ int ConnectionSock::send(const std::vector<uint8_t> &buffer)
     impl_->tcb->state == TcpState::CLOSING ||
     impl_->tcb->state == TcpState::LAST_ACK ||
     impl_->tcb->state == TcpState::TIME_WAIT){
-        return -3;
+        return CONNECTION_CLOSE;
     }
 
     if(impl_->tcb->snd.wnd == 0){
@@ -120,7 +128,7 @@ int ConnectionSock::recv(std::vector<uint8_t> &buffer)
     
     //the connection is reset by peer.
     if(impl_->tcb->state == TcpState::CLOSE){
-        return -2;
+        return CONNECTION_RESET;
     }
     
     //peer clsoe send. only get data from recvQueue.
@@ -134,7 +142,7 @@ int ConnectionSock::recv(std::vector<uint8_t> &buffer)
     if(impl_->tcb->state == TcpState::CLOSING ||
         impl_->tcb->state == TcpState::LAST_ACK ||
         impl_->tcb->state == TcpState::TIME_WAIT){
-        return -3;
+        return CONNECTION_CLOSE;
     }
     
     if(impl_->tcb->recvQueue.size() == 0){

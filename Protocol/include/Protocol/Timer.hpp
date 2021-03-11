@@ -4,10 +4,10 @@
 #include <chrono>
 #include <functional>
 
-using SystemTimePoint = std::chrono::time_point<std::chrono::system_clock>;
+using HrTimePoint = std::chrono::time_point<std::chrono::high_resolution_clock>;
 
 struct Timer{
-    SystemTimePoint expired;
+    HrTimePoint expired;
     std::function<void()> handler;
 };
 

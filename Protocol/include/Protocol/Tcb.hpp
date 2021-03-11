@@ -10,6 +10,9 @@
 #include <condition_variable>
 #include <mutex>
 
+#define MIN_RTO 200
+#define MAX_RTO 6400
+
 struct SND{
     //send unacknowledged
     uint32_t una;
@@ -49,6 +52,7 @@ struct RCV{
 
 enum TcpState{
     CLOSE,
+    ABORT,
     LISTEN,
     SYN_SENT,
     SYN_RECEIVED,
@@ -76,6 +80,9 @@ struct Tcb{
     std::condition_variable estCond;
 
     Timer retransmissionTimer;
+
+    //milliseconds
+    uint32_t rto = MIN_RTO;
 
     Tcb(SocketPair &addr);
     Tcb(SocketPair &addr, tcphdr *th);
