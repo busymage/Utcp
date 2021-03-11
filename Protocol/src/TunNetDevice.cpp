@@ -19,7 +19,7 @@ int tun_alloc(int flags)
 	int fd, err;
 	const char *clonedev = "/dev/net/tun";
 
-	if ((fd = open(clonedev, O_RDWR)) < 0)
+	if ((fd = open(clonedev, O_RDWR | O_NONBLOCK)) < 0)
 	{
 		return fd;
 	}
@@ -67,13 +67,29 @@ int TunNetDevice::send(const uint8_t *data, size_t len)
 	int nwrite = write(impl_->netdev, data, len);
 	if (nwrite == -1)
 	{
-		perror("write to netDevice:");
-		exit(1);
+		if(errno == EAGAIN || errno == EWOULDBLOCK){
+			return -1;
+		}
+		else{	
+			perror("write to netDevice:");
+			exit(1);
+		}
 	}
 	return nwrite;
 }
 
 int TunNetDevice::recv(uint8_t *data, size_t len)
 {
-	return read(impl_->netdev, data, len);
+	int nread =  read(impl_->netdev, data, len);
+	if (nread == -1)
+	{
+		if(errno == EAGAIN || errno == EWOULDBLOCK){
+			return -1;
+		}
+		else{	
+			perror("read from netDevice:");
+			exit(1);
+		}
+	}
+	return nread;
 }

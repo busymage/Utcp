@@ -709,7 +709,6 @@ void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
         std::shared_ptr<Tcb> tcb = getEstablishedConnection(pair)->tcb();
         //lock tcb
         std::lock_guard<std::mutex> lock(tcb->lock);
-        printf("acquire lock\n");
         onPacket(tcb, buffer);
         if(tcb->recvQueue.size() > 0 ||
             tcb->state == TcpState::CLOSE_WAIT ||
@@ -742,8 +741,7 @@ void Tcp::worker(std::future<bool> stop)
 		int nread = impl_->netDev->recv(buffer.data(), buffer.size());
 		if (nread < 0)
 		{
-			perror("Reading from interface");
-			exit(1);
+			continue;
 		}
 		packetProcessing(buffer);
 	}
