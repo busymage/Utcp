@@ -20,6 +20,7 @@ set(Headers include/Protocol/ChecksumCalc.hpp
             include/Protocol/SocketPair.hpp
             include/Protocol/Tcp.hpp
             include/Protocol/Tcb.hpp
+            include/Protocol/Timer.hpp
             include/Protocol/TunNetDevice.hpp
             )
 

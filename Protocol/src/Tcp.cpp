@@ -7,6 +7,7 @@
 #include <Protocol/SocketPair.hpp>
 #include <Protocol/Tcb.hpp>
 #include <Protocol/Tcp.hpp>
+#include <Protocol/Timer.hpp>
 #include <chrono>
 #include <future>
 #include <iostream>
@@ -111,6 +112,17 @@ struct Tcp::Impl
     std::promise<bool> stop;
 
     uint8_t portBitmap[UINT16_MAX / 8] = {0};
+
+    std::map<std::shared_ptr<ConnectionSock>, Timer>  RetransmissionTimers;
+
+    void transmitSyn(std::shared_ptr<Tcb> tcb)
+    {
+        tcphdr *th = new tcphdr;
+        setDefaultValueForTcpHeader(tcb, *th);
+        th->syn = 1;
+        th->seq = htonl(tcb->snd.iss);
+        calcTcpAndSend(tcb, *th, sizeof(tcphdr));
+    }
 
     bool setPortifNotSet(uint16_t port)
     {
@@ -646,6 +658,9 @@ void Tcp::stop()
 		
 bool Tcp::addListener(std::shared_ptr<PassiveSock> sock)
 {
+    if(!impl_->setPortifNotSet(sock->name().sport)){
+        return false;
+    }
     if(impl_->listener.find(sock->name().sport) != impl_->listener.end()){
         return false;
     }
@@ -719,7 +734,8 @@ void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
             tcb->state == TcpState::CLOSE){
             tcb->sndCond.notify_one();
         }
-        if(tcb->state == TcpState::ESTABLISHED){
+        if(tcb->state == TcpState::ESTABLISHED ||
+            tcb->state == TcpState::CLOSE){
             tcb->estCond.notify_one();
         }
     }
@@ -801,10 +817,7 @@ void Tcp::connect(std::shared_ptr<ConnectionSock> sock)
     tcb->state = TcpState::SYN_SENT;
     addConnection(sock);
     //send syn packet
-    tcphdr *th = new tcphdr;
-    setDefaultValueForTcpHeader(tcb, *th);
-    th->syn = 1;
-    impl_->calcTcpAndSend(tcb, *th, sizeof(tcphdr));
+    impl_->transmitSyn(tcb);
     tcb->snd.nxt += 1;
 }
 

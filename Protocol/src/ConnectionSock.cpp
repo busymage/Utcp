@@ -69,8 +69,12 @@ int ConnectionSock::connect(uint32_t addr, uint16_t port)
     impl_->tcp->connect(shared_from_this());
     
     impl_->tcb->estCond.wait(lock, [this](){
-            return impl_->tcb->state == TcpState::ESTABLISHED;
+            return impl_->tcb->state == TcpState::ESTABLISHED ||
+                impl_->tcb->state == TcpState::CLOSE;
     });
+    if(impl_->tcb->state == TcpState::CLOSE){
+        return -2;
+    }
     return 0;
 }
 

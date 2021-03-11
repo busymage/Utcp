@@ -5,6 +5,7 @@
 #include <netinet/tcp.h>
 #include <ostream>
 #include <Protocol/SocketPair.hpp>
+#include <Protocol/Timer.hpp>
 #include <stdint.h>
 #include <condition_variable>
 #include <mutex>
@@ -73,6 +74,8 @@ struct Tcb{
     std::condition_variable sndCond;
     std::condition_variable rcvCond;
     std::condition_variable estCond;
+
+    Timer retransmissionTimer;
 
     Tcb(SocketPair &addr);
     Tcb(SocketPair &addr, tcphdr *th);

@@ -15,6 +15,9 @@ int main()
 	int ret = conn->connect(0xc0a80250, 8888);
 	if(ret == 0){
 		printf("Connected.\n");
+	}else{
+		printf("Connection reset by peer.\n");
+		return ret;
 	}
 	while (1)
 	{
