@@ -144,10 +144,16 @@ int ConnectionSock::recv(std::vector<uint8_t> &buffer)
         impl_->tcb->state == TcpState::TIME_WAIT){
         return CONNECTION_CLOSE;
     }
+
+    if(impl_->tcb->state == TcpState::ABORT){
+        return CONNECTION_TIMEOUT;
+    }
     
     if(impl_->tcb->recvQueue.size() == 0){
         impl_->tcb->rcvCond.wait(lock, [this](){
-            return impl_->IsReadable() || TcpState::CLOSE_WAIT == impl_->tcb->state;
+            return impl_->IsReadable() || TcpState::CLOSE_WAIT == impl_->tcb->state
+                    || TcpState::CLOSE == impl_->tcb->state
+                    || TcpState::ABORT == impl_->tcb->state;
         });
     }
     buffer = impl_->tcb->recvQueue;

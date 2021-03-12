@@ -22,16 +22,20 @@ int main()
 		printf("Connection timeout.\n");
 		return ret;
 	}
-	while (1)
+
+	std::vector<uint8_t> buffer(1000, 'x');
+	for(int i = 0; i < 500; i++)
 	{
-		std::vector<uint8_t> buffer;
+		conn->send(buffer);
 		int nrecv = conn->recv(buffer);
 		printf("recv %d bytes\n", nrecv);
 		if(nrecv == 0){
 			conn->close();
 			break;
 		}
-		conn->send(buffer);
 	}
+	conn->close();
+	std::this_thread::sleep_for(std::chrono::seconds(1));
+
 	return 0;
 }

@@ -11,7 +11,7 @@
 #include <mutex>
 
 #define MIN_RTO 200
-#define MAX_RTO 6400
+#define MAX_RTO 12800
 
 struct SND{
     //send unacknowledged
@@ -80,6 +80,8 @@ struct Tcb{
     std::condition_variable estCond;
 
     Timer retransmissionTimer;
+
+    std::vector<uint8_t> rtmixQueue;
 
     //milliseconds
     uint32_t rto = MIN_RTO;
