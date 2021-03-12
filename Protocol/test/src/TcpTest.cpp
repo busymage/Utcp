@@ -543,3 +543,28 @@ TEST_F(TcpTest, close)
 
     ASSERT_EQ(tcp->getEstablishedConnection(tcb->addr), nullptr);
 }
+
+TEST_F(TcpTest, shouldNotAckIfIncomingAckHaveNoDataInEstablishedState)
+{
+    std::shared_ptr<Tcb> tcb = std::make_shared<Tcb>(serverSideAddr);
+    tcb->state = TcpState::ESTABLISHED;
+    tcb->snd.nxt = 0x1234;
+    tcb->snd.una = 0x1234;
+    tcb->rcv.nxt = 0x4567;
+    tcb->rcv.wnd = 512;
+    auto connSock = std::make_shared<ConnectionSock> (tcp.get(), tcb);
+    ASSERT_TRUE(tcp->addConnection(connSock));
+  
+    tcphdr th = {0};
+    th.source = sp.sport;
+    th.dest = sp.dport;
+    th.doff = 5;
+    th.seq = htonl(0x4567);
+    th.ack_seq = htonl(0x1234);
+    th.ack = 1;
+    PacketBuilder pb(sp.saddr, sp.daddr, &th, 20);
+    std::vector<uint8_t> packet = pb.packet();
+    netDev->recv(packet.data(), packet.size());
+
+    ASSERT_EQ(0, netDev->outData.size());
+}

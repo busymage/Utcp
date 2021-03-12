@@ -365,12 +365,13 @@ struct Tcp::Impl
         if(seg.dataLen() > 0){
             auto conn = establishedConnection[tcb->addr];
             receiveData(conn, seg);
+            sendAcknowledgment(tcb);
         }
         if(seg.fin()){
             tcb->rcv.nxt = seg.seq() + 1;
             tcb->state = TcpState::CLOSE_WAIT;
+            sendAcknowledgment(tcb);
         }
-        sendAcknowledgment(tcb);
         return true;
     }
 
