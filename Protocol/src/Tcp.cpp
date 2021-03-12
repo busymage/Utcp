@@ -380,6 +380,7 @@ struct Tcp::Impl
         if(!checkAck(tcb, seg)){
             return false;
         }
+        removeTimer(tcb);
         if(seg.fin()){
             tcb->rcv.nxt = seg.seq() + 1;
             sendAcknowledgment(tcb);
@@ -394,6 +395,7 @@ struct Tcp::Impl
         if(!checkAck(tcb, seg)){
             return false;
         }
+        removeTimer(tcb);
         if(seg.ackSeq() == tcb->snd.nxt){
             tcb->state = TcpState::FIN_WAIT2;
         }
