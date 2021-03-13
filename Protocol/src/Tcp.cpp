@@ -103,6 +103,8 @@ T min(T lhs, T rhs)
 struct Tcp::Impl
 {
     std::shared_ptr<INetDevice> netDev;
+
+    std::map<SocketPair, std::shared_ptr<ConnectionSock>> synBacklog;
     
     std::map<SocketPair, std::shared_ptr<ConnectionSock>> establishedConnection;
     
@@ -314,6 +316,9 @@ struct Tcp::Impl
                 if(tcb->snd.una > tcb->snd.iss){
                     tcb->state = TcpState::ESTABLISHED;
                     sendAcknowledgment(tcb);
+                    auto sock = getHalfConnection(tcb->addr);
+                    removeHalfConnection(tcb->addr);
+                    addConnection(sock);
                 }else{
                     tcb->state = TcpState::SYN_RECEIVED;
                     tcphdr th = {0};
@@ -337,11 +342,14 @@ struct Tcp::Impl
             th.seq = htonl(seg.ackSeq());
             th.rst = 1;
             calcTcpAndSend(tcb->addr, th, sizeof(tcphdr));
-            auto it = establishedConnection.find(tcb->addr);
-            establishedConnection.erase(it);
             return false;
         }
         tcb->state = TcpState::ESTABLISHED;
+        
+        auto sock = getHalfConnection(tcb->addr);
+        removeHalfConnection(tcb->addr);
+        addConnection(sock);
+
         //add sock to backlog
         auto connection = establishedConnection[tcb->addr];
         auto accpetor = listener[tcb->addr.sport];
@@ -540,8 +548,11 @@ struct Tcp::Impl
     }
 
     void deleteConn(std::shared_ptr<Tcb> tcb){
-        auto it = establishedConnection.find(tcb->addr);
-        establishedConnection.erase(it);
+        if(tcb->state == TcpState::SYN_SENT || tcb->state == TcpState::SYN_RECEIVED){
+            removeHalfConnection(tcb->addr);
+        }else{
+           removeConnection(tcb->addr);
+        }
     }
 
     void calcTcpAndSend(SocketPair addr, tcphdr &th, uint16_t segLen){
@@ -565,6 +576,64 @@ struct Tcp::Impl
         tcb->sndQueue.clear();
         tcb->recvQueue.clear();
         deleteConn(tcb);
+    }
+
+    std::shared_ptr<ConnectionSock> getHalfConnection(SocketPair &sockname)
+    {
+        std::lock_guard<std::mutex> tcpLock(lock);
+        auto it = synBacklog.find(sockname);
+        if (it != synBacklog.end())
+        {
+            return synBacklog[sockname];
+        }
+        return {};
+    }
+
+    bool addHalfConnection(std::shared_ptr<ConnectionSock> sock)
+    {
+        std::lock_guard<std::mutex> tcpLock(lock);
+        if (synBacklog.find(sock->name()) != synBacklog.end())
+        {
+            return false;
+        }
+        synBacklog[sock->name()] = sock;
+        return true;
+    }
+
+    void removeHalfConnection(SocketPair &sockname)
+    {
+        std::lock_guard<std::mutex> tcpLock(lock);
+        auto it = synBacklog.find(sockname);
+        if (it != synBacklog.end())
+        {
+            synBacklog.erase(it);
+        }
+    }
+
+    bool isEstablishing(SocketPair &pair)
+    {
+        std::lock_guard<std::mutex> tcpLock(lock);
+        return synBacklog.find(pair) != synBacklog.end();
+    }
+
+    bool addConnection(std::shared_ptr<ConnectionSock> sock)
+    {
+        std::lock_guard<std::mutex> tcpLock(lock);
+        if(establishedConnection.find(sock->name()) != establishedConnection.end()){
+            return false;
+        }
+        establishedConnection[sock->name()] = sock;
+        return true;
+    }
+
+    void removeConnection(SocketPair &sockname)
+    {
+        std::lock_guard<std::mutex> tcpLock(lock);
+        auto it = establishedConnection.find(sockname);
+        if (it != establishedConnection.end())
+        {
+            establishedConnection.erase(it);
+        }
     }
 };
 
@@ -768,8 +837,8 @@ void Tcp::onAccept(std::vector<uint8_t> &buffer)
     tcb->snd.una = tcb->snd.iss;
     tcb->state = TcpState::SYN_RECEIVED;
 
-    //add connection to map
-    impl_->establishedConnection[tcb->addr] = std::make_shared<ConnectionSock>(this, tcb);
+    //add connection to syn backlog
+    impl_->synBacklog[tcb->addr] = std::make_shared<ConnectionSock>(this, tcb);
 
     //start timer
     tcb->rto = MIN_RTO;
@@ -825,21 +894,32 @@ void Tcp::removeListener(uint16_t port)
 
 bool Tcp::addConnection(std::shared_ptr<ConnectionSock> sock)
 {
-    std::lock_guard<std::mutex> lock(impl_->lock);
-    if(impl_->establishedConnection.find(sock->name()) != impl_->establishedConnection.end()){
-        return false;
-    }
-    impl_->establishedConnection[sock->name()] = sock;
-    return true;
+    return impl_->addConnection(sock);
 }
 
 void Tcp::removeConnection(SocketPair &sockname)
 {
-    std::lock_guard<std::mutex> lock(impl_->lock);
-    auto it = impl_->establishedConnection.find(sockname);
-    if(it != impl_->establishedConnection.end()){
-        impl_->establishedConnection.erase(it);
-    }
+    impl_->removeConnection(sockname);
+}
+
+bool Tcp::addHalfConnection(std::shared_ptr<ConnectionSock> sock)
+{
+    return impl_->addHalfConnection(sock);
+}
+
+void Tcp::removeHalfConnection(SocketPair &sockname)
+{
+    impl_->removeHalfConnection(sockname);
+}
+
+bool Tcp::isEstablishing(SocketPair &pair)const
+{
+    return impl_->isEstablishing(pair);
+}
+
+std::shared_ptr<ConnectionSock> Tcp::getHalfConnection(SocketPair &pair)
+{
+    return impl_->getHalfConnection(pair);
 }
 
 void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
@@ -867,9 +947,16 @@ void Tcp::packetProcessing(std::vector<uint8_t> &buffer)
         inetHdr->saddr,     //foregin
         tcpHdr->source};
 
-    if (isEstablished(pair))
+    if (isEstablished(pair) || isEstablishing(pair))
     {
-        std::shared_ptr<Tcb> tcb = getEstablishedConnection(pair)->tcb();
+        std::shared_ptr<ConnectionSock> conn;
+        if(isEstablished(pair)){
+            conn = getEstablishedConnection(pair);
+        }else{
+            conn = getHalfConnection(pair);
+        }
+        auto tcb = conn->tcb();
+
         //lock tcb
         std::lock_guard<std::mutex> lock(tcb->lock);
         onPacket(tcb, buffer);
@@ -985,7 +1072,7 @@ void Tcp::connect(std::shared_ptr<ConnectionSock> sock)
 {
     auto tcb = sock->tcb();
     tcb->state = TcpState::SYN_SENT;
-    addConnection(sock);
+    addHalfConnection(sock);
     //send syn packet
     impl_->transmitSyn(tcb);
     tcb->snd.nxt += 1;

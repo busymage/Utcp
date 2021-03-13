@@ -141,7 +141,7 @@ TEST_F(TcpTest, recvSynInListen)
     ASSERT_EQ(hdr->syn, 1);
     ASSERT_EQ(hdr->ack, 1);
 
-    std::shared_ptr<Tcb> tcb = tcp->getEstablishedConnection(serverSideAddr)->tcb();
+    std::shared_ptr<Tcb> tcb = tcp->getHalfConnection(serverSideAddr)->tcb();
     ASSERT_NE(tcb, nullptr);
     ASSERT_EQ(tcb->snd.iss, ntohl(hdr->seq));
     ASSERT_EQ(tcb->snd.nxt, tcb->snd.iss + 1);
@@ -260,7 +260,7 @@ TEST_F(TcpTest, receiveResetInSynReceived)
     tcb->rcv.wnd = 512;
     tcb->rcv.nxt = 0x4567;
     auto connSock = std::make_shared<ConnectionSock> (tcp.get(), tcb);
-    ASSERT_TRUE(tcp->addConnection(connSock));
+    ASSERT_TRUE(tcp->addHalfConnection(connSock));
 
     tcphdr th = {0};
     th.source = sp.sport;
@@ -276,7 +276,7 @@ TEST_F(TcpTest, receiveResetInSynReceived)
     netDev->recv(packet.data(), packet.size());
 
     ASSERT_EQ(netDev->outData.size(), 0);
-    ASSERT_EQ(tcp->getEstablishedConnection(serverSideAddr), nullptr);
+    ASSERT_EQ(tcp->getHalfConnection(serverSideAddr), nullptr);
 }
 
 TEST_F(TcpTest, receiveSynNotInSynchronizedState)
@@ -318,7 +318,7 @@ TEST_F(TcpTest, receiveAckAndIntoEstablished)
     tcb->rcv.wnd = 512;
     tcb->rcv.nxt = 0x4567;
     auto connSock = std::make_shared<ConnectionSock> (tcp.get(), tcb);
-    ASSERT_TRUE(tcp->addConnection(connSock));
+    ASSERT_TRUE(tcp->addHalfConnection(connSock));
 
     tcphdr th = {0};
     th.source = sp.sport;
@@ -335,6 +335,8 @@ TEST_F(TcpTest, receiveAckAndIntoEstablished)
 
     ASSERT_EQ(netDev->outData.size(), 0);
     ASSERT_EQ(tcb->state, TcpState::ESTABLISHED);
+    ASSERT_FALSE(tcp->isEstablishing(connSock->name()));
+    ASSERT_TRUE(tcp->isEstablished(connSock->name()));
 }
 
 TEST_F(TcpTest, receiveAckButAckCheckFaild)
@@ -347,7 +349,7 @@ TEST_F(TcpTest, receiveAckButAckCheckFaild)
     tcb->rcv.wnd = 512;
     tcb->rcv.nxt = 0x4567;
     auto connSock = std::make_shared<ConnectionSock> (tcp.get(), tcb);
-    ASSERT_TRUE(tcp->addConnection(connSock));
+    ASSERT_TRUE(tcp->addHalfConnection(connSock));
 
     tcphdr th = {0};
     th.source = sp.sport;
@@ -368,6 +370,7 @@ TEST_F(TcpTest, receiveAckButAckCheckFaild)
     ASSERT_EQ(hdr->rst, 1);
     ASSERT_EQ(hdr->seq, th.ack_seq);
     ASSERT_EQ(tcp->getEstablishedConnection(serverSideAddr), nullptr);
+    ASSERT_TRUE(tcp->isEstablishing(serverSideAddr));
 }
 
 TEST_F(TcpTest, receiveAckWithDataInEstablishedState)
@@ -453,7 +456,7 @@ TEST_F(TcpTest, segmentArriveInSynSent)
     tcb->snd.una = 0x1233;
     tcb->rcv.wnd = 512;
     auto connSock = std::make_shared<ConnectionSock> (tcp.get(), tcb);
-    ASSERT_TRUE(tcp->addConnection(connSock));
+    ASSERT_TRUE(tcp->addHalfConnection(connSock));
 
     tcphdr th = {0};
     th.source = sp.sport;

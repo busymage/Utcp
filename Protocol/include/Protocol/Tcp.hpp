@@ -40,6 +40,14 @@ public:
 
     void removeConnection(SocketPair &sockname);
 
+    bool isEstablishing(SocketPair &pair)const;
+
+    bool addHalfConnection(std::shared_ptr<ConnectionSock> ConnectionSock);
+
+    void removeHalfConnection(SocketPair &sockname);
+
+    std::shared_ptr<ConnectionSock> getHalfConnection(SocketPair &pair);
+
     void packetProcessing(std::vector<uint8_t> &buffer);
 
     void send(std::shared_ptr<Tcb> tcb); 
