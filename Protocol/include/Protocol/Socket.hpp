@@ -4,6 +4,7 @@
 #include <memory>
 #include <stdint.h>
 #include <vector>
+#include <string>
 
 class Tcp;
 class ISock;
@@ -17,19 +18,23 @@ public:
         INVAILD
     };
 
+    struct ErrorCode{
+        std::string msg;
+    };
+
 public:
 
     Socket(Tcp *tcp, SocketType type);
 
-    int bind(uint16_t port);
+    int bind(uint16_t port, ErrorCode &code);
 
-    int connect(uint32_t addr, uint16_t port);
+    int connect(uint32_t addr, uint16_t port, ErrorCode &code);
 
-    Socket accept();
+    Socket accept(ErrorCode &code);
 
-    int send(const std::vector<uint8_t> &buffer);
+    int send(const std::vector<uint8_t> &buffer, ErrorCode &code);
 
-    int recv(std::vector<uint8_t> &buffer);
+    int recv(std::vector<uint8_t> &buffer, ErrorCode &code);
 
     int close();
 
