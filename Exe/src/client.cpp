@@ -1,7 +1,7 @@
 #include <memory>
 #include <Protocol/Tcp.hpp>
 #include <Protocol/TunNetDevice.hpp>
-#include <Protocol/ConnectionSock.hpp>
+#include <Protocol/Socket.hpp>
 #include <vector>
 
 int main()
@@ -11,8 +11,8 @@ int main()
 	tcp.run();
 	std::this_thread::sleep_for(std::chrono::seconds(1));
 
-	auto conn = std::make_shared<ConnectionSock>(&tcp);
-	int ret = conn->connect(0xc0a80250, 8888);
+	Socket socket(&tcp, Socket::SocketType::ACTIVE);
+	int ret = socket.connect(0xc0a80250, 8888);
 	if(ret == 0){
 		printf("Connected.\n");
 	}else if(ret == -2){
@@ -26,15 +26,15 @@ int main()
 	std::vector<uint8_t> buffer(1000, 'x');
 	for(int i = 0; i < 500; i++)
 	{
-		conn->send(buffer);
-		int nrecv = conn->recv(buffer);
+		socket.send(buffer);
+		int nrecv = socket.recv(buffer);
 		printf("recv %d bytes\n", nrecv);
 		if(nrecv == 0){
-			conn->close();
+			socket.close();
 			break;
 		}
 	}
-	conn->close();
+	socket.close();
 	std::this_thread::sleep_for(std::chrono::seconds(1));
 
 	return 0;

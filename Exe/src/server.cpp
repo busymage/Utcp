@@ -1,8 +1,7 @@
 #include <memory>
 #include <Protocol/Tcp.hpp>
 #include <Protocol/TunNetDevice.hpp>
-#include <Protocol/PassiveSock.hpp>
-#include <Protocol/ConnectionSock.hpp>
+#include <Protocol/Socket.hpp>
 #include <vector>
 
 int main()
@@ -11,19 +10,20 @@ int main()
 	Tcp tcp(netdev);
 	tcp.run();
 	
-	auto ps = std::make_shared<PassiveSock>(&tcp);
-	ps->bind(8888);
-	auto sock = ps->accept();
+	Socket socket(&tcp, Socket::SocketType::PASSIVE);
+	socket.bind(8888);
+	Socket client = socket.accept();
+	printf("new connection\n");
 	while (1)
 	{
 		std::vector<uint8_t> buffer;
-		int nrecv = sock->recv(buffer);
+		int nrecv = client.recv(buffer);
 		printf("recv %d bytes\n", nrecv);
 		if(nrecv == 0){
-			sock->close();
+			client.close();
 			break;
 		}
-		sock->send(buffer);
+		client.send(buffer);
 	}
 	
 	return 0;

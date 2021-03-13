@@ -5,6 +5,7 @@ set(Sources src/ChecksumCalc.cpp
             src/PacketBuilder.cpp
             src/PassiveSock.cpp
             src/Segment.cpp
+            src/Socket.cpp
             src/Tcb.cpp
             src/Tcp.cpp
             src/TunNetDevice.cpp
@@ -17,6 +18,7 @@ set(Headers include/Protocol/ChecksumCalc.hpp
             include/Protocol/PacketBuilder.hpp
             include/Protocol/PassiveSock.hpp
             include/Protocol/Segment.hpp
+            include/Protocol/Socket.hpp
             include/Protocol/SocketPair.hpp
             include/Protocol/Tcp.hpp
             include/Protocol/Tcb.hpp
