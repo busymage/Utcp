@@ -406,51 +406,12 @@ struct Tcp::Impl
 
         //delete timer
         removeTimer(tcb);
-
-        if (seg.fin())
-        {
-            tcb->rcv.nxt = seg.seq() + 1;
-            sendAcknowledgment(tcb);
-        }
         return true;
     }
 
     bool established(std::shared_ptr<Tcb> tcb, Segment &seg)
     {
-        if (!checkAck(tcb, seg))
-        {
-            return false;
-        }
-        if (seg.dataLen() > 0)
-        {
-            auto conn = establishedConnection[tcb->addr];
-            receiveData(conn, seg);
-            sendAcknowledgment(tcb);
-        }
-        if (seg.fin())
-        {
-            tcb->rcv.nxt = seg.seq() + 1;
-            tcb->state = TcpState::CLOSE_WAIT;
-            sendAcknowledgment(tcb);
-        }
-        return true;
-    }
-
-    bool lastAck(std::shared_ptr<Tcb> tcb, Segment &seg)
-    {
-        if (!checkAck(tcb, seg))
-        {
-            return false;
-        }
-        removeTimer(tcb);
-        if (seg.fin())
-        {
-            tcb->rcv.nxt = seg.seq() + 1;
-            sendAcknowledgment(tcb);
-        }
-        auto it = establishedConnection.find(tcb->addr);
-        establishedConnection.erase(it);
-        return true;
+        return checkAck(tcb, seg);
     }
 
     bool finWait1(std::shared_ptr<Tcb> tcb, Segment &seg)
@@ -464,42 +425,16 @@ struct Tcp::Impl
         {
             tcb->state = TcpState::FIN_WAIT2;
         }
-        if (seg.dataLen() > 0)
-        {
-            sendAcknowledgment(tcb);
-        }
-        //Simultaneous Close
-        if (seg.fin())
-        {
-            tcb->rcv.nxt = 1 + seg.seq();
-            sendAcknowledgment(tcb);
-            if (tcb->state == TcpState::FIN_WAIT2)
-            {
-                tcb->state = TcpState::TIME_WAIT;
-            }
-            else
-            {
-                tcb->state = TcpState::CLOSING;
-            }
-            return true;
-        }
         return true;
     }
 
     bool finWait2(std::shared_ptr<Tcb> tcb, Segment &seg)
     {
-        if (!checkAck(tcb, seg))
-        {
-            return false;
-        }
+        return checkAck(tcb, seg);
         if (seg.dataLen() > 0)
         {
-            sendAcknowledgment(tcb);
-        }
-        if (seg.fin())
-        {
-            tcb->state = TcpState::TIME_WAIT;
-            tcb->rcv.nxt = seg.seq() + 1;
+            auto conn = establishedConnection[tcb->addr];
+            receiveData(conn, seg);
             sendAcknowledgment(tcb);
         }
         return true;
@@ -507,10 +442,7 @@ struct Tcp::Impl
 
     bool closeWait(std::shared_ptr<Tcb> tcb, Segment &seg)
     {
-        if (!checkAck(tcb, seg))
-        {
-            return false;
-        }
+        return checkAck(tcb, seg);
         if (seg.fin())
         {
             tcb->rcv.nxt = seg.seq() + 1;
@@ -530,12 +462,21 @@ struct Tcp::Impl
         if (seg.ackSeq() == tcb->snd.nxt)
         {
             tcb->state = TcpState::TIME_WAIT;
+            return true;
+        }else{
+            return false;
         }
-        if (seg.fin())
+    }
+
+    bool lastAck(std::shared_ptr<Tcb> tcb, Segment &seg)
+    {
+        if (!checkAck(tcb, seg))
         {
-            tcb->rcv.nxt = seg.seq() + 1;
-            sendAcknowledgment(tcb);
+            return false;
         }
+        removeTimer(tcb);
+        auto it = establishedConnection.find(tcb->addr);
+        establishedConnection.erase(it);
         return true;
     }
 
@@ -838,12 +779,6 @@ void Tcp::onPacket(std::shared_ptr<Tcb> tcb, std::vector<uint8_t> &buffer)
             return;
         }
         break;
-    case TcpState::LAST_ACK:
-        if (impl_->lastAck(tcb, seg))
-        {
-            return;
-        }
-        break;
     case TcpState::FIN_WAIT1:
         if (!impl_->finWait1(tcb, seg))
         {
@@ -868,14 +803,72 @@ void Tcp::onPacket(std::shared_ptr<Tcb> tcb, std::vector<uint8_t> &buffer)
             return;
         }
         break;
+    case TcpState::LAST_ACK:
+        impl_->lastAck(tcb, seg);
+        return;
     case TcpState::TIME_WAIT:
-        if (!impl_->timeWait(tcb, seg))
-        {
-            return;
-        }
-        break;
+        impl_->timeWait(tcb, seg);
+        return;
     default:
         break;
+    }
+
+    //process segment data
+    if (seg.dataLen() > 0)
+    {
+        switch (tcb->state)
+        {
+        case TcpState::ESTABLISHED:
+        case TcpState::FIN_WAIT1:
+        case TcpState::FIN_WAIT2:
+        {
+            auto conn = getEstablishedConnection(tcb->addr);
+            impl_->receiveData(conn, seg);
+            if(!seg.fin())
+            {
+                impl_->sendAcknowledgment(tcb);
+            }
+        }
+        break;
+        default:
+            break;
+        }
+    }
+
+    //check fin
+    if (seg.fin())
+    {
+        tcb->rcv.nxt = seg.seq() + 1;
+        impl_->sendAcknowledgment(tcb);
+
+        switch (tcb->state)
+        {
+        case TcpState::SYN_RECEIVED:
+        case TcpState::ESTABLISHED:
+            tcb->state = TcpState::CLOSE_WAIT;
+            break;
+
+        case TcpState::FIN_WAIT1:
+            //Todo: start time wait timer
+            if(seg.ackSeq() == tcb->snd.nxt)
+            {
+                impl_->removeTimer(tcb);
+            }
+            break;
+
+        case TcpState::FIN_WAIT2:
+            //Todo: start time wait timer
+            tcb->state = TcpState::TIME_WAIT;
+            break;
+
+        default:
+            break;
+        }
+    }
+
+    if(tcb->state == TcpState::TIME_WAIT)
+    {
+        impl_->deleteConn(tcb);
     }
 }
 
