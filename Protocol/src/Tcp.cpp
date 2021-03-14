@@ -238,12 +238,18 @@ struct Tcp::Impl
                 exit(1);
             }
 
-            tcphdr *th = (tcphdr*)data;
+            tcphdr *th = (tcphdr *)data;
             uint8_t *payload = data + sizeof(tcphdr);
             setDefaultValueForTcpHeader(tcb, *th);
+            // RfC 1122 4.2.2.2
+            // MUST set the PSH bit in the last buffered segment
+            if (haveWritten + segLen >= totalLen)
+            {
+                th->psh = 1;
+            }
             th->ack = 1;
             th->seq = htonl(seq);
-            memcpy(payload, tcb->rtmixQueue.data() + haveWritten,segLen);
+            memcpy(payload, tcb->rtmixQueue.data() + haveWritten, segLen);
             calcTcpAndSend(tcb->addr, *th, sizeof(tcphdr) + segLen);
 
             seq += segLen;
@@ -1034,6 +1040,11 @@ void Tcp::send(std::shared_ptr<Tcb> tcb)
         uint8_t *payload = data + sizeof(tcphdr);
         setDefaultValueForTcpHeader(tcb, *th);
         th->ack = 1;
+        // RfC 1122 4.2.2.2
+        // MUST set the PSH bit in the last buffered segment
+        if(haveWritten + segLen >= totalLen){
+            th->psh = 1;
+        }
         memcpy(payload, tcb->sndQueue.data(),segLen);
         tcb->sndQueue.erase(tcb->sndQueue.begin(), tcb->sndQueue.begin() + segLen);
         impl_->calcTcpAndSend(tcb->addr, *th, sizeof(tcphdr) + segLen);
