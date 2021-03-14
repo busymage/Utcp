@@ -448,7 +448,7 @@ TEST_F(TcpTest, receiveVaildAckAndFinInFinWait1State)
     ASSERT_EQ(hdr->ack_seq, htonl(0x4568));
 }
 
-TEST_F(TcpTest, segmentArriveInSynSent)
+TEST_F(TcpTest, SynAckArriveInSynSent)
 {
     std::shared_ptr<Tcb> tcb = std::make_shared<Tcb>(serverSideAddr);
     tcb->state = TcpState::SYN_SENT;
@@ -477,6 +477,37 @@ TEST_F(TcpTest, segmentArriveInSynSent)
     std::vector<uint8_t> data = netDev->outData[0];
     tcphdr *hdr = (tcphdr *)(data.data() + sizeof(iphdr));
     ASSERT_EQ(hdr->ack_seq, htonl(0x4568));
+}
+
+TEST_F(TcpTest, SynArriveInSynSent)
+{
+    std::shared_ptr<Tcb> tcb = std::make_shared<Tcb>(serverSideAddr);
+    tcb->state = TcpState::SYN_SENT;
+    tcb->snd.nxt = 0x1234;
+    tcb->snd.una = 0x1233;
+    tcb->rcv.wnd = 512;
+    auto connSock = std::make_shared<ConnectionSock> (tcp.get(), tcb);
+    ASSERT_TRUE(tcp->addHalfConnection(connSock));
+
+    tcphdr th = {0};
+    th.source = sp.sport;
+    th.dest = sp.dport;
+    th.th_off = 5;
+    th.seq = htonl(0x4567);
+    th.ack_seq = htonl(0);
+    th.syn = 1;
+    th.window = 1234;
+    th.check = caclTcpChecksum(&th, 20, sp.saddr, sp.daddr);
+    PacketBuilder pb(sp.saddr, sp.daddr, &th, 20);
+    std::vector<uint8_t> packet = pb.packet();
+    netDev->recv(packet.data(), packet.size());
+
+    ASSERT_EQ(TcpState::SYN_RECEIVED, tcb->state);
+    ASSERT_EQ(netDev->outData.size(), 1);
+    std::vector<uint8_t> data = netDev->outData[0];
+    tcphdr *hdr = (tcphdr *)(data.data() + sizeof(iphdr));
+    ASSERT_EQ(hdr->syn, 1);
+    ASSERT_EQ(hdr->ack, 1);
 }
 
 TEST_F(TcpTest, receiveContinuousDataInEstablishedState)
